@@ -274,8 +274,18 @@ button:focus-visible, a:focus-visible {
 }
 .download-action small { color: #cce8dd; font-size: 10px; }
 
-footer { padding: 16px 2px 0; color: var(--muted); font-size: 11px; }
+footer {
+  display: flex;
+  padding: 16px 2px 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
 footer p { margin: 0; }
+footer a { color: inherit; text-underline-offset: 3px; }
+footer a:hover { color: var(--green); }
 
 .visually-hidden {
   position: absolute;
@@ -298,4 +308,5 @@ footer p { margin: 0; }
   .file-drop { min-height: 130px; padding: 20px 16px; }
   .action-row { align-items: stretch; flex-direction: column; }
   .primary-action, .download-action { width: 100%; }
+  footer { align-items: flex-start; flex-direction: column; gap: 6px; }
 }

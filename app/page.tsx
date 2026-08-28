@@ -174,7 +174,7 @@ export default function Home() {
     <main className="site-shell">
       <header className="app-header">
         <div>
-          <p>PC-98 FAT12 HDM</p>
+          <p>RetroGame Patcher / PC-98 FAT12</p>
           <h1>한글패치 적용</h1>
           <span>패치 ZIP을 먼저 확인한 다음, 지원되는 원본 HDM에 적용합니다.</span>
         </div>
@@ -263,6 +263,13 @@ export default function Home() {
 
       <footer>
         <p>원본과 결과는 이 탭의 메모리에서만 처리됩니다.</p>
+        <a
+          href="https://github.com/mcpads/pc98-fat12-patcher-tool"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          소스 코드 (GitHub)
+        </a>
       </footer>
     </main>
   );
