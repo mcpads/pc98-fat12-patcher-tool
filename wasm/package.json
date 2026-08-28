@@ -1,0 +1,15 @@
+{
+  "name": "pc98-fat12-patcher-core",
+  "type": "module",
+  "version": "0.0.0",
+  "files": [
+    "pc98_fat12_patcher_core_bg.wasm",
+    "pc98_fat12_patcher_core.js",
+    "pc98_fat12_patcher_core.d.ts"
+  ],
+  "main": "pc98_fat12_patcher_core.js",
+  "types": "pc98_fat12_patcher_core.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

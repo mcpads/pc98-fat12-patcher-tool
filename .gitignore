@@ -1,0 +1,71 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# local environment
+.env*
+
+# deployment and generated files
+.vercel
+next-env.d.ts
+/dist/
+/.wrangler/
+/outputs/
+/work/
+/patch-core/target/
+/tsconfig.tsbuildinfo
+
+# private game inputs, generated media, and release payloads
+/artifacts/
+/captures/
+/extracted/
+/inputs/
+/packages/
+/private/
+/qa/
+/source-media/
+*.[hH][dD][mM]
+*.[hH][dD][iI]
+*.[fF][dD][iI]
+*.[dD]88
+*.[nN][fF][dD]
+*.[xX][dD][fF]
+*.[nN][hH][dD]
+*.[iI][mM][gG]
+*.[iI][mM][aA]
+*.[iI][sS][oO]
+*.[bB][pP][sS]
+*.[iI][pP][sS]
+*.[xX][dD][eE][lL][tT][aA]
+*.[vV][cC][dD][iI][fF][fF]
+*.[zZ][iI][pP]
+*.[7][zZ]
+*.[rR][aA][rR]
+*.[sS][aA][vV]
+*.[sS][rR][mM]
+*.[sS][tT][aA][tT][eE]
+*.[mM][cC][rR]

@@ -1,0 +1,99 @@
+use std::io::{Cursor, Write};
+
+use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions, format_volume};
+
+use crate::hash::sha256_hex;
+use crate::recipe::{
+    AssemblyRecipe, ExactFile, Fat12Geometry, FileSource, MountPolicy, PatchRecipe, PlacedFile,
+    SourceImage, TargetImage,
+};
+
+pub(crate) const FIXTURE_SIZE: usize = 1_474_560;
+
+pub(crate) fn fixture_geometry() -> Fat12Geometry {
+    Fat12Geometry {
+        bytes_per_sector: 512,
+        sectors_per_cluster: 1,
+        reserved_sectors: 1,
+        fat_count: 2,
+        root_entries: 224,
+        total_sectors: 2_880,
+        media_descriptor: 0xf0,
+        sectors_per_fat: 9,
+        sectors_per_track: 18,
+        heads: 2,
+    }
+}
+
+pub(crate) fn fixture_image(files: &[(&str, &[u8])], include_directory: bool) -> Vec<u8> {
+    let mut image = vec![0_u8; FIXTURE_SIZE];
+    let options = FormatVolumeOptions::new()
+        .bytes_per_sector(512)
+        .bytes_per_cluster(512)
+        .total_sectors(2_880)
+        .fat_type(FatType::Fat12)
+        .max_root_dir_entries(224)
+        .fats(2)
+        .media(0xf0)
+        .sectors_per_track(18)
+        .heads(2);
+    format_volume(Cursor::new(image.as_mut_slice()), options).unwrap();
+    {
+        let filesystem =
+            FileSystem::new(Cursor::new(image.as_mut_slice()), FsOptions::new()).unwrap();
+        let root = filesystem.root_dir();
+        for (name, bytes) in files {
+            let mut file = root.create_file(name).unwrap();
+            file.write_all(bytes).unwrap();
+        }
+        if include_directory {
+            let directory = root.create_dir("JUNK").unwrap();
+            let mut file = directory.create_file("OLD.TXT").unwrap();
+            file.write_all(b"remove me").unwrap();
+        }
+        drop(root);
+        filesystem.unmount().unwrap();
+    }
+    image
+}
+
+pub(crate) fn direct_root_recipe(
+    source: &[u8],
+    retained_name: &str,
+    retained_bytes: &[u8],
+    input_name: &str,
+    output_name: &str,
+    output_bytes: &[u8],
+) -> PatchRecipe {
+    PatchRecipe {
+        id: "fixture-patch".to_owned(),
+        title: "Fixture Patch".to_owned(),
+        output_filename: "fixture-patched.hdm".to_owned(),
+        source: SourceImage {
+            size: source.len(),
+            sha256: sha256_hex(source),
+            geometry: fixture_geometry(),
+            mount_policy: MountPolicy::Standard,
+        },
+        assembly: AssemblyRecipe {
+            baseline_sha256: "0".repeat(64),
+            retained_files: vec![ExactFile {
+                name: retained_name.to_owned(),
+                size: retained_bytes.len(),
+                sha256: sha256_hex(retained_bytes),
+            }],
+            placed_files: vec![PlacedFile {
+                name: output_name.to_owned(),
+                source: FileSource::RootFile {
+                    name: input_name.to_owned(),
+                },
+                size: output_bytes.len(),
+                sha256: sha256_hex(output_bytes),
+            }],
+        },
+        target: TargetImage {
+            size: source.len(),
+            sha256: "0".repeat(64),
+        },
+    }
+}

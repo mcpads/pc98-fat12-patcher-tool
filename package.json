@@ -1,0 +1,40 @@
+{
+  "name": "pc98-fat12-patcher-tool",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "vinext dev",
+    "build": "vinext build && node scripts/prepare-static-site.mjs",
+    "build:hosted": "vinext build && node scripts/prepare-static-site.mjs --package",
+    "preview:static": "vite preview --config vite.static-preview.config.ts --outDir dist/site",
+    "start": "vinext start",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern wasm --ignore-pattern work",
+    "typecheck": "tsc --noEmit --incremental false",
+    "core:build": "sh scripts/build-wasm.sh",
+    "core:fmt": "cargo fmt --manifest-path patch-core/Cargo.toml -- --check",
+    "core:test": "cargo test --manifest-path patch-core/Cargo.toml"
+  },
+  "dependencies": {
+    "next": "16.3.3",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.1.0",
+    "@vitejs/plugin-rsc": "0.5.34",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.3.3",
+    "react-server-dom-webpack": "19.2.8",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "vinext": "1.0.0-beta.8",
+    "vite": "8.2.2"
+  },
+  "type": "module"
+}
