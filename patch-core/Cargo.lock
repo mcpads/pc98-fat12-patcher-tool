@@ -375,9 +375,9 @@ name = "pc98-fat12-patcher-core"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "crc32fast",
  "delharc",
  "fatfs",
+ "retro-patch-utility",
  "serde",
  "serde_json",
  "sha2",
@@ -415,6 +415,15 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "retro-patch-utility"
+version = "0.0.0"
+source = "git+https://github.com/mcpads/retro-patch-utility?rev=1733ff660268da277cde808d42f02540b997c6b2#1733ff660268da277cde808d42f02540b997c6b2"
+dependencies = [
+ "anyhow",
+ "crc32fast",
+]
 
 [[package]]
 name = "rustix"

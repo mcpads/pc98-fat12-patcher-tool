@@ -9,17 +9,9 @@ import {
   readPatchPackageRecipe,
 } from './lib/patch-core';
 import {
-  type HostedPackage,
   type RecipeSummary,
-  loadHostedPackage,
   readRecipeSummary,
 } from './lib/patch-definition';
-
-type DefinitionState =
-  | { kind: 'loading' }
-  | { kind: 'local' }
-  | { kind: 'hosted'; value: HostedPackage }
-  | { kind: 'error'; message: string };
 
 type RunState =
   | { kind: 'idle' }
@@ -51,23 +43,9 @@ export default function Home() {
   const [packageBytes, setPackageBytes] = useState<Uint8Array | null>(null);
   const [packageSummary, setPackageSummary] = useState<RecipeSummary | null>(null);
   const [packageError, setPackageError] = useState<string | null>(null);
-  const [definition, setDefinition] = useState<DefinitionState>({ kind: 'loading' });
   const [run, setRun] = useState<RunState>({ kind: 'idle' });
   const [download, setDownload] = useState<Download | null>(null);
   const packageReadSequence = useRef(0);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    loadHostedPackage(controller.signal)
-      .then((hosted) => {
-        setDefinition(hosted ? { kind: 'hosted', value: hosted } : { kind: 'local' });
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === 'AbortError') return;
-        setDefinition({ kind: 'error', message: errorMessage(error) });
-      });
-    return () => controller.abort();
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -75,11 +53,8 @@ export default function Home() {
     };
   }, [download]);
 
-  const activeSummary = definition.kind === 'hosted'
-    ? definition.value.summary
-    : packageSummary;
-  const hasDefinition = definition.kind === 'hosted'
-    || (definition.kind === 'local' && packageBytes !== null && packageSummary !== null);
+  const activeSummary = packageSummary;
+  const hasDefinition = packageBytes !== null && packageSummary !== null;
   const sourceSizeMatches = source === null || activeSummary === null || source.size === activeSummary.sourceSize;
   const canRun = source !== null
     && hasDefinition
@@ -87,8 +62,6 @@ export default function Home() {
     && run.kind !== 'working';
   const status = useMemo(() => {
     if (run.kind !== 'idle') return run;
-    if (definition.kind === 'loading') return { kind: 'idle', message: '패치 정의를 확인하고 있습니다.' };
-    if (definition.kind === 'error') return { kind: 'error', message: definition.message };
     if (packageError) return { kind: 'error', message: packageError };
     if (!hasDefinition) return { kind: 'idle', message: '패치 ZIP을 선택하세요.' };
     if (!source) return { kind: 'idle', message: '지원 원본 HDM을 선택하세요.' };
@@ -99,7 +72,7 @@ export default function Home() {
       };
     }
     return { kind: 'idle', message: '입력이 준비됐습니다. 원본 검사부터 시작합니다.' };
-  }, [activeSummary, definition, hasDefinition, packageError, run, source, sourceSizeMatches]);
+  }, [activeSummary, hasDefinition, packageError, run, source, sourceSizeMatches]);
 
   function resetResult() {
     setRun({ kind: 'idle' });
@@ -134,26 +107,18 @@ export default function Home() {
   }
 
   async function createPatchedImage() {
-    if (!source || !hasDefinition) return;
+    if (!source || !packageBytes || !activeSummary) return;
     resetResult();
     setRun({ kind: 'working', message: '원본 해시와 FAT12 구조를 확인하고 있습니다.' });
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     try {
-      let selectedPackage: Uint8Array;
-      if (definition.kind === 'hosted') {
-        selectedPackage = definition.value.packageBytes;
-      } else {
-        if (!packageBytes) throw new Error('패치 ZIP을 선택하세요.');
-        selectedPackage = packageBytes;
-      }
-      if (!activeSummary) throw new Error('패치 ZIP의 레시피를 읽을 수 없습니다.');
       const sourceBytes = new Uint8Array(await source.arrayBuffer());
       if (sourceBytes.length !== activeSummary.sourceSize) {
         throw new Error(`원본 크기가 다릅니다. ${activeSummary.sourceSize}바이트 파일이 필요합니다.`);
       }
-      setRun({ kind: 'working', message: '기준 HDM을 조립하고 BPS를 적용하고 있습니다.' });
+      setRun({ kind: 'working', message: '파일별 패치를 적용하고 결과 HDM을 조립하고 있습니다.' });
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      const output = await makePatchedImage(sourceBytes, selectedPackage);
+      const output = await makePatchedImage(sourceBytes, packageBytes);
       const blob = new Blob([new Uint8Array(output)], { type: 'application/octet-stream' });
       const nextDownload = {
         filename: activeSummary.outputFilename,
@@ -192,34 +157,22 @@ export default function Home() {
         <div className="input-section definition-section">
           <div className="section-heading">
             <span>01</span>
-            <div><strong>패치 ZIP</strong><small>먼저 recipe.json과 patch.bps를 검사합니다.</small></div>
+            <div><strong>패치 ZIP</strong><small>먼저 recipe.json과 파일별 BPS를 검사합니다.</small></div>
           </div>
-          {definition.kind === 'loading' && <p className="definition-notice">배포 설정을 확인하고 있습니다…</p>}
-          {definition.kind === 'error' && <p className="definition-notice is-error">설정 오류: {definition.message}</p>}
-          {definition.kind === 'hosted' && (
-            <div className="hosted-definition">
-              <span className="hosted-mark" aria-hidden="true">✓</span>
-              <div>
-                <strong>배포자가 패치 ZIP을 제공했습니다.</strong>
-                <small>{definition.value.packageName}</small>
-              </div>
-            </div>
-          )}
-          {definition.kind === 'local' && (
-            <div className="definition-file">
-              <FilePicker
-                accept=".zip,application/zip,application/x-zip-compressed"
-                badge="ZIP"
-                file={packageFile}
-                hint="패치 ZIP을 여기에 놓거나 눌러서 선택"
-                label="패치 ZIP 선택"
-                onChange={(file) => {
-                  setSource(null);
-                  void selectPackage(file);
-                }}
-              />
-            </div>
-          )}
+          <div className="definition-file">
+            <FilePicker
+              accept=".zip,application/zip,application/x-zip-compressed"
+              badge="ZIP"
+              file={packageFile}
+              hint="패치 ZIP을 여기에 놓거나 눌러서 선택"
+              label="패치 ZIP 선택"
+              validation={packageError ? 'invalid' : (packageSummary ? 'valid' : 'unchecked')}
+              onChange={(file) => {
+                setSource(null);
+                void selectPackage(file);
+              }}
+            />
+          </div>
           {activeSummary && (
             <dl className="identity-row">
               <div><dt>원본</dt><dd>{activeSummary.sourceSha256.slice(0, 12)}…</dd></div>
@@ -243,6 +196,9 @@ export default function Home() {
               ? '원본 HDM을 여기에 놓거나 눌러서 선택'
               : '먼저 패치 ZIP을 선택하세요.'}
             label="HDM 파일을 선택하세요"
+            validation={source && !sourceSizeMatches
+              ? 'invalid'
+              : (source && run.kind === 'success' ? 'valid' : 'unchecked')}
             onChange={(file) => { resetResult(); setSource(file); }}
           />
         </div>

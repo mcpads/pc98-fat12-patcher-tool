@@ -1,14 +1,42 @@
 use std::collections::BTreeSet;
+use std::fmt;
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::hash::validate_sha256;
+use crate::hash::{EMPTY_SHA256, validate_sha256};
 use crate::limits::{MAX_HDM_BYTES, MAX_RECIPE_BYTES};
+
+pub const PACKAGE_FORMAT: &str = "retrogame-patcher-pc98-fat12-file-bps";
+
+#[derive(Debug)]
+pub(crate) struct UnsupportedPackageFormat;
+
+impl fmt::Display for UnsupportedPackageFormat {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unsupported patch package format; expected {PACKAGE_FORMAT}"
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedPackageFormat {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchPlan {
+    pub id: String,
+    pub title: String,
+    pub output_filename: String,
+    pub source: SourceImage,
+    pub assembly: PlannedAssemblyRecipe,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatchRecipe {
+    pub format: String,
     pub id: String,
     pub title: String,
     pub output_filename: String,
@@ -50,8 +78,14 @@ pub enum MountPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PlannedAssemblyRecipe {
+    pub retained_files: Vec<ExactFile>,
+    pub placed_files: Vec<PlannedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssemblyRecipe {
-    pub baseline_sha256: String,
     pub retained_files: Vec<ExactFile>,
     pub placed_files: Vec<PlacedFile>,
 }
@@ -66,11 +100,48 @@ pub struct ExactFile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PlannedFile {
+    pub name: String,
+    pub source: FileSource,
+    pub source_size: usize,
+    pub source_sha256: String,
+    pub transform: PlannedTransform,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlannedTransform {
+    Copy,
+    Bps,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlacedFile {
     pub name: String,
     pub source: FileSource,
-    pub size: usize,
-    pub sha256: String,
+    pub source_size: usize,
+    pub source_sha256: String,
+    pub transform: FileTransform,
+}
+
+impl PlacedFile {
+    pub fn target_size(&self) -> usize {
+        match self.transform {
+            FileTransform::Copy => self.source_size,
+            FileTransform::Bps { target_size, .. } => target_size,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FileTransform {
+    Copy,
+    Bps {
+        target_size: usize,
+        target_sha256: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +149,7 @@ pub struct PlacedFile {
 pub enum FileSource {
     RootFile { name: String },
     MzLhaMember { container: String, member: String },
+    Empty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,106 +159,130 @@ pub struct TargetImage {
     pub sha256: String,
 }
 
+pub fn parse_plan(json: &str) -> Result<PatchPlan> {
+    require_recipe_size(json)?;
+    let plan: PatchPlan = serde_json::from_str(json).context("parse patch author plan JSON")?;
+    plan.validate()?;
+    Ok(plan)
+}
+
 pub fn parse_recipe(json: &str) -> Result<PatchRecipe> {
-    ensure!(
-        json.len() <= MAX_RECIPE_BYTES,
-        "patch recipe is too large: {} bytes exceeds {MAX_RECIPE_BYTES}",
-        json.len()
-    );
-    let recipe: PatchRecipe = serde_json::from_str(json).context("parse patch recipe JSON")?;
+    require_recipe_size(json)?;
+    let value: serde_json::Value = serde_json::from_str(json).context("parse patch recipe JSON")?;
+    let format = value
+        .as_object()
+        .and_then(|object| object.get("format"))
+        .and_then(serde_json::Value::as_str);
+    if format != Some(PACKAGE_FORMAT) {
+        return Err(UnsupportedPackageFormat.into());
+    }
+    let recipe: PatchRecipe = serde_json::from_value(value).context("parse patch recipe JSON")?;
     recipe.validate()?;
     Ok(recipe)
 }
 
-impl PatchRecipe {
+impl PatchPlan {
     pub fn validate(&self) -> Result<()> {
-        ensure!(!self.id.trim().is_empty(), "recipe id cannot be empty");
-        ensure!(
-            !self.title.trim().is_empty(),
-            "recipe title cannot be empty"
-        );
-        ensure!(
-            !self.output_filename.trim().is_empty(),
-            "output filename cannot be empty"
-        );
-        ensure!(
-            !self.output_filename.contains(['/', '\\']),
-            "output filename must not contain a path"
-        );
-        ensure!(self.source.size > 0, "source image size must be positive");
-        ensure!(
-            self.source.size <= MAX_HDM_BYTES,
-            "source HDM is too large: {} bytes exceeds {MAX_HDM_BYTES}",
-            self.source.size
-        );
-        ensure!(
-            self.target.size == self.source.size,
-            "target HDM size must equal source HDM size"
-        );
-        validate_sha256(&self.source.sha256, "source image")?;
-        validate_sha256(&self.assembly.baseline_sha256, "baseline image")?;
-        validate_sha256(&self.target.sha256, "target image")?;
-        self.source.geometry.validate(self.source.size)?;
-
-        let output_file_count = self
-            .assembly
-            .retained_files
-            .len()
-            .checked_add(self.assembly.placed_files.len())
-            .context("assembly file count overflow")?;
-        ensure!(
-            output_file_count <= usize::from(self.source.geometry.root_entries),
-            "assembly declares {output_file_count} root files but geometry has {} root entries",
-            self.source.geometry.root_entries
-        );
-        let mut output_names = BTreeSet::new();
-        for file in &self.assembly.retained_files {
-            validate_exact_file(file, "retained file", self.source.size)?;
-            ensure!(
-                output_names.insert(file.name.as_str()),
-                "duplicate output file name: {}",
-                file.name
-            );
-        }
+        validate_identity(&self.id, &self.title, &self.output_filename)?;
+        validate_source_image(&self.source)?;
+        validate_output_count(
+            &self.source,
+            self.assembly.retained_files.len(),
+            self.assembly.placed_files.len(),
+        )?;
+        let mut output_names =
+            validate_retained_files(&self.assembly.retained_files, self.source.size)?;
         for file in &self.assembly.placed_files {
-            validate_dos_name(&file.name, "placed file name")?;
-            validate_sha256(&file.sha256, &format!("placed file {}", file.name))?;
-            ensure!(
-                file.size <= self.source.size,
-                "placed file {} is larger than the source HDM",
-                file.name
-            );
+            validate_placed_source(
+                &file.name,
+                &file.source,
+                file.source_size,
+                &file.source_sha256,
+                self.source.size,
+            )?;
             ensure!(
                 output_names.insert(file.name.as_str()),
                 "duplicate output file name: {}",
                 file.name
             );
-            match &file.source {
-                FileSource::RootFile { name } => validate_dos_name(name, "root source file")?,
-                FileSource::MzLhaMember { container, member } => {
-                    validate_dos_name(container, "LHA container")?;
-                    validate_dos_name(member, "LHA member")?;
-                }
-            }
         }
-        ensure!(
-            !output_names.is_empty(),
-            "assembly file set cannot be empty"
-        );
-        let output_file_bytes = self
+        require_nonempty_assembly(&output_names)?;
+        let declared_bytes = self
             .assembly
             .retained_files
             .iter()
             .map(|file| file.size)
-            .chain(self.assembly.placed_files.iter().map(|file| file.size))
-            .try_fold(0usize, |total, size| total.checked_add(size))
-            .context("assembly output file size overflow")?;
+            .chain(
+                self.assembly
+                    .placed_files
+                    .iter()
+                    .map(|file| file.source_size),
+            );
+        validate_declared_file_bytes(declared_bytes, self.source.size)
+    }
+}
+
+impl PatchRecipe {
+    pub fn validate(&self) -> Result<()> {
         ensure!(
-            output_file_bytes <= self.source.size,
-            "assembly declares {output_file_bytes} bytes of root files but the source HDM is {} bytes",
-            self.source.size
+            self.format == PACKAGE_FORMAT,
+            "recipe format must be {PACKAGE_FORMAT}"
         );
-        Ok(())
+        validate_identity(&self.id, &self.title, &self.output_filename)?;
+        validate_source_image(&self.source)?;
+        ensure!(
+            self.target.size == self.source.size,
+            "target HDM size must equal source HDM size"
+        );
+        validate_sha256(&self.target.sha256, "target image")?;
+        validate_output_count(
+            &self.source,
+            self.assembly.retained_files.len(),
+            self.assembly.placed_files.len(),
+        )?;
+        let mut output_names =
+            validate_retained_files(&self.assembly.retained_files, self.source.size)?;
+        for file in &self.assembly.placed_files {
+            validate_placed_source(
+                &file.name,
+                &file.source,
+                file.source_size,
+                &file.source_sha256,
+                self.source.size,
+            )?;
+            match &file.transform {
+                FileTransform::Copy => {}
+                FileTransform::Bps {
+                    target_size,
+                    target_sha256,
+                } => {
+                    ensure!(
+                        *target_size <= self.source.size,
+                        "target file {} is larger than the source HDM",
+                        file.name
+                    );
+                    validate_sha256(target_sha256, &format!("target file {}", file.name))?;
+                }
+            }
+            ensure!(
+                output_names.insert(file.name.as_str()),
+                "duplicate output file name: {}",
+                file.name
+            );
+        }
+        require_nonempty_assembly(&output_names)?;
+        let declared_bytes = self
+            .assembly
+            .retained_files
+            .iter()
+            .map(|file| file.size)
+            .chain(
+                self.assembly
+                    .placed_files
+                    .iter()
+                    .map(PlacedFile::target_size),
+            );
+        validate_declared_file_bytes(declared_bytes, self.source.size)
     }
 }
 
@@ -248,14 +344,123 @@ impl Fat12Geometry {
     }
 }
 
-fn validate_exact_file(file: &ExactFile, label: &str, image_size: usize) -> Result<()> {
-    validate_dos_name(&file.name, label)?;
-    validate_sha256(&file.sha256, &format!("{label} {}", file.name))?;
+fn require_recipe_size(json: &str) -> Result<()> {
     ensure!(
-        file.size <= image_size,
-        "{label} {} is larger than the source HDM",
-        file.name
+        json.len() <= MAX_RECIPE_BYTES,
+        "patch recipe is too large: {} bytes exceeds {MAX_RECIPE_BYTES}",
+        json.len()
     );
+    Ok(())
+}
+
+fn validate_identity(id: &str, title: &str, output_filename: &str) -> Result<()> {
+    ensure!(!id.trim().is_empty(), "recipe id cannot be empty");
+    ensure!(!title.trim().is_empty(), "recipe title cannot be empty");
+    ensure!(
+        !output_filename.trim().is_empty(),
+        "output filename cannot be empty"
+    );
+    ensure!(
+        !output_filename.contains(['/', '\\']),
+        "output filename must not contain a path"
+    );
+    Ok(())
+}
+
+fn validate_source_image(source: &SourceImage) -> Result<()> {
+    ensure!(source.size > 0, "source image size must be positive");
+    ensure!(
+        source.size <= MAX_HDM_BYTES,
+        "source HDM is too large: {} bytes exceeds {MAX_HDM_BYTES}",
+        source.size
+    );
+    validate_sha256(&source.sha256, "source image")?;
+    source.geometry.validate(source.size)
+}
+
+fn validate_output_count(source: &SourceImage, retained: usize, placed: usize) -> Result<()> {
+    let output_file_count = retained
+        .checked_add(placed)
+        .context("assembly file count overflow")?;
+    ensure!(
+        output_file_count <= usize::from(source.geometry.root_entries),
+        "assembly declares {output_file_count} root files but geometry has {} root entries",
+        source.geometry.root_entries
+    );
+    Ok(())
+}
+
+fn validate_retained_files(
+    retained_files: &[ExactFile],
+    image_size: usize,
+) -> Result<BTreeSet<&str>> {
+    let mut names = BTreeSet::new();
+    for file in retained_files {
+        validate_dos_name(&file.name, "retained file")?;
+        validate_sha256(&file.sha256, &format!("retained file {}", file.name))?;
+        ensure!(
+            file.size <= image_size,
+            "retained file {} is larger than the source HDM",
+            file.name
+        );
+        ensure!(
+            names.insert(file.name.as_str()),
+            "duplicate output file name: {}",
+            file.name
+        );
+    }
+    Ok(names)
+}
+
+fn validate_placed_source(
+    output_name: &str,
+    source: &FileSource,
+    source_size: usize,
+    source_sha256: &str,
+    image_size: usize,
+) -> Result<()> {
+    validate_dos_name(output_name, "placed file name")?;
+    validate_sha256(source_sha256, &format!("source file {output_name}"))?;
+    ensure!(
+        source_size <= image_size,
+        "source file {output_name} is larger than the source HDM"
+    );
+    match source {
+        FileSource::RootFile { name } => validate_dos_name(name, "root source file"),
+        FileSource::MzLhaMember { container, member } => {
+            validate_dos_name(container, "LHA container")?;
+            validate_dos_name(member, "LHA member")
+        }
+        FileSource::Empty => {
+            ensure!(
+                source_size == 0,
+                "empty source for {output_name} must have size 0"
+            );
+            ensure!(
+                source_sha256 == EMPTY_SHA256,
+                "empty source for {output_name} must have the SHA-256 of zero bytes"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn validate_declared_file_bytes(
+    mut sizes: impl Iterator<Item = usize>,
+    image_size: usize,
+) -> Result<()> {
+    let output_file_bytes = sizes
+        .try_fold(0usize, |total, size| total.checked_add(size))
+        .context("assembly output file size overflow")?;
+    ensure!(
+        output_file_bytes <= image_size,
+        "assembly declares {output_file_bytes} bytes of root files but the source HDM is {image_size} bytes"
+    );
+    Ok(())
+}
+
+fn require_nonempty_assembly(names: &BTreeSet<&str>) -> Result<()> {
+    ensure!(!names.is_empty(), "assembly file set cannot be empty");
     Ok(())
 }
 

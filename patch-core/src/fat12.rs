@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 use anyhow::{Context, Result, ensure};
-use fatfs::{FatType, FileSystem, FsOptions};
+use fatfs::{DirEntry, FatType, FileSystem, FsOptions, ReadWriteSeek};
 
 use crate::hash::require_sha256;
 use crate::limits::MAX_FAT_DIRECTORY_DEPTH;
-use crate::recipe::{ExactFile, Fat12Geometry, MountPolicy, PatchRecipe};
+use crate::recipe::{ExactFile, Fat12Geometry, MountPolicy, SourceImage};
 
 const HIDDEN_SECTORS_OFFSET: usize = 28;
 const TOTAL_SECTORS_32_OFFSET: usize = 32;
@@ -32,14 +32,16 @@ pub(crate) fn read_root_files(
     Ok(files)
 }
 
-pub(crate) fn assemble_baseline(
+pub(crate) fn assemble_image(
     source: &[u8],
-    recipe: &PatchRecipe,
+    source_profile: &SourceImage,
+    retained_files: &[ExactFile],
+    placed_file_names: &[String],
     placed_files: &BTreeMap<String, Vec<u8>>,
 ) -> Result<Vec<u8>> {
-    require_geometry(source, &recipe.source.geometry)?;
-    let reserved_len = reserved_region_len(&recipe.source.geometry)?;
-    let mut image = mount_copy(source, recipe.source.mount_policy)?;
+    require_geometry(source, &source_profile.geometry)?;
+    let reserved_len = reserved_region_len(&source_profile.geometry)?;
+    let mut image = mount_copy(source, source_profile.mount_policy)?;
     {
         let filesystem = FileSystem::new(Cursor::new(image.as_mut_slice()), FsOptions::new())
             .context("mount working FAT12 image")?;
@@ -48,21 +50,19 @@ pub(crate) fn assemble_baseline(
             "working filesystem is not FAT12"
         );
         let root = filesystem.root_dir();
-        let retained_names: BTreeSet<_> = recipe
-            .assembly
-            .retained_files
+        let retained_names: BTreeSet<_> = retained_files
             .iter()
             .map(|file| file.name.as_str())
             .collect();
         remove_nonretained_entries(&root, &retained_names)?;
-        for expected in &recipe.assembly.retained_files {
+        for expected in retained_files {
             verify_root_file(&root, expected)?;
         }
-        for file in &recipe.assembly.placed_files {
+        for name in placed_file_names {
             let bytes = placed_files
-                .get(&file.name)
-                .with_context(|| format!("resolved file set is missing {}", file.name))?;
-            write_root_file(&root, &file.name, bytes)?;
+                .get(name)
+                .with_context(|| format!("resolved file set is missing {name}"))?;
+            write_root_file(&root, name, bytes)?;
         }
         drop(root);
         filesystem
@@ -70,7 +70,13 @@ pub(crate) fn assemble_baseline(
             .context("unmount assembled FAT12 image")?;
     }
     image[..reserved_len].copy_from_slice(&source[..reserved_len]);
-    verify_baseline(&image, recipe, placed_files)?;
+    verify_image(
+        &image,
+        source_profile,
+        retained_files,
+        placed_file_names,
+        placed_files,
+    )?;
     Ok(image)
 }
 
@@ -143,21 +149,13 @@ fn remove_nonretained_entries<T: fatfs::ReadWriteSeek>(
     root: &fatfs::Dir<'_, T>,
     retained: &BTreeSet<&str>,
 ) -> Result<()> {
-    let entries = root
-        .iter()
-        .map(|entry| {
-            entry.map(|entry| {
-                (
-                    entry.file_name(),
-                    entry.is_dir(),
-                    entry.file_name().to_ascii_uppercase(),
-                )
-            })
-        })
-        .collect::<std::io::Result<Vec<_>>>()
-        .context("enumerate source FAT12 root")?;
-    for (name, is_directory, upper_name) in entries {
-        if retained.contains(upper_name.as_str()) {
+    let mut entries = Vec::new();
+    for entry in root.iter() {
+        let entry = entry.context("enumerate source FAT12 root")?;
+        entries.push((short_file_name(&entry)?, entry.is_dir()));
+    }
+    for (name, is_directory) in entries {
+        if retained.contains(name.as_str()) {
             ensure!(!is_directory, "retained root entry is a directory: {name}");
             continue;
         }
@@ -182,11 +180,11 @@ fn remove_directory_contents<T: fatfs::ReadWriteSeek>(
         depth <= MAX_FAT_DIRECTORY_DEPTH,
         "FAT12 directory nesting exceeds {MAX_FAT_DIRECTORY_DEPTH} levels"
     );
-    let entries = directory
-        .iter()
-        .map(|entry| entry.map(|entry| (entry.file_name(), entry.is_dir())))
-        .collect::<std::io::Result<Vec<_>>>()
-        .context("enumerate FAT12 directory")?;
+    let mut entries = Vec::new();
+    for entry in directory.iter() {
+        let entry = entry.context("enumerate FAT12 directory")?;
+        entries.push((short_file_name(&entry)?, entry.is_dir()));
+    }
     for (name, is_directory) in entries {
         if matches!(name.as_str(), "." | "..") {
             continue;
@@ -275,21 +273,23 @@ fn verify_root_file<T: fatfs::ReadWriteSeek>(
     require_sha256(&bytes, &expected.sha256, &expected.name)
 }
 
-fn verify_baseline(
+fn verify_image(
     image: &[u8],
-    recipe: &PatchRecipe,
+    source_profile: &SourceImage,
+    retained_files: &[ExactFile],
+    placed_file_names: &[String],
     placed_files: &BTreeMap<String, Vec<u8>>,
 ) -> Result<()> {
     ensure!(
-        image.len() == recipe.source.size,
+        image.len() == source_profile.size,
         "assembled image size changed: expected {}, got {}",
-        recipe.source.size,
+        source_profile.size,
         image.len()
     );
-    require_geometry(image, &recipe.source.geometry)?;
-    verify_fat_mirrors(image, &recipe.source.geometry)?;
+    require_geometry(image, &source_profile.geometry)?;
+    verify_fat_mirrors(image, &source_profile.geometry)?;
     let filesystem = FileSystem::new(
-        Cursor::new(mount_copy(image, recipe.source.mount_policy)?),
+        Cursor::new(mount_copy(image, source_profile.mount_policy)?),
         FsOptions::new(),
     )
     .context("remount assembled FAT12 image")?;
@@ -297,41 +297,44 @@ fn verify_baseline(
     let mut actual_names = BTreeSet::new();
     for entry in root.iter() {
         let entry = entry.context("enumerate assembled FAT12 root")?;
+        let name = short_file_name(&entry)?;
         ensure!(
             !entry.is_dir(),
-            "assembled root contains an unexpected directory: {}",
-            entry.file_name()
+            "assembled root contains an unexpected directory: {name}"
         );
-        actual_names.insert(entry.file_name().to_ascii_uppercase());
+        actual_names.insert(name);
     }
-    let expected_names: BTreeSet<_> = recipe
-        .assembly
-        .retained_files
+    let expected_names: BTreeSet<_> = retained_files
         .iter()
         .map(|file| file.name.clone())
-        .chain(
-            recipe
-                .assembly
-                .placed_files
-                .iter()
-                .map(|file| file.name.clone()),
-        )
+        .chain(placed_file_names.iter().cloned())
         .collect();
     ensure!(
         actual_names == expected_names,
         "assembled root file set differs: expected {expected_names:?}, got {actual_names:?}"
     );
-    for file in &recipe.assembly.retained_files {
+    for file in retained_files {
         verify_root_file(&root, file)?;
     }
-    for file in &recipe.assembly.placed_files {
+    for name in placed_file_names {
         let expected = placed_files
-            .get(&file.name)
-            .with_context(|| format!("resolved file set is missing {}", file.name))?;
-        let actual = read_root_file(&root, &file.name, expected.len())?;
-        ensure!(actual == *expected, "assembled file differs: {}", file.name);
+            .get(name)
+            .with_context(|| format!("resolved file set is missing {name}"))?;
+        let actual = read_root_file(&root, name, expected.len())?;
+        ensure!(actual == *expected, "assembled file differs: {name}");
     }
     Ok(())
+}
+
+fn short_file_name<T: ReadWriteSeek>(entry: &DirEntry<'_, T>) -> Result<String> {
+    let bytes = entry.short_file_name_as_bytes();
+    ensure!(
+        bytes.is_ascii(),
+        "FAT12 short name contains a non-ASCII OEM byte: {bytes:?}"
+    );
+    Ok(std::str::from_utf8(bytes)
+        .context("FAT12 short name is not ASCII")?
+        .to_ascii_uppercase())
 }
 
 fn verify_fat_mirrors(image: &[u8], geometry: &Fat12Geometry) -> Result<()> {

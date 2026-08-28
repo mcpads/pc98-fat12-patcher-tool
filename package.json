@@ -7,12 +7,12 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build && node scripts/prepare-static-site.mjs",
-    "build:hosted": "vinext build && node scripts/prepare-static-site.mjs --package",
     "preview:static": "vite preview --config vite.static-preview.config.ts --outDir dist/site",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern wasm --ignore-pattern work",
     "typecheck": "tsc --noEmit --incremental false",
     "core:build": "sh scripts/build-wasm.sh",
+    "core:conformance:wasm": "node scripts/check-wasm-conformance.mjs",
     "core:fmt": "cargo fmt --manifest-path patch-core/Cargo.toml -- --check",
     "core:test": "cargo test --manifest-path patch-core/Cargo.toml"
   },

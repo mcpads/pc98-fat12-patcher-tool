@@ -69,3 +69,7 @@ next-env.d.ts
 *.[sS][rR][mM]
 *.[sS][tT][aA][tT][eE]
 *.[mM][cC][rR]
+
+# Public, synthetic protocol conformance vectors contain no game data.
+!/conformance/
+!/conformance/**

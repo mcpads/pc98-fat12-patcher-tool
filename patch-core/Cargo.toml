@@ -9,9 +9,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1.0"
-crc32fast = "1.5"
 delharc = { version = "0.8", default-features = false, features = ["std"] }
-fatfs = { version = "0.3.6", default-features = false, features = ["alloc", "std"] }
+fatfs = { version = "0.3.6", default-features = false, features = ["std"] }
+retro-patch-utility = { git = "https://github.com/mcpads/retro-patch-utility", rev = "1733ff660268da277cde808d42f02540b997c6b2" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"

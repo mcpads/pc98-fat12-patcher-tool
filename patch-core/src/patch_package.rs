@@ -1,28 +1,44 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 
+use crate::file_patch::inspect_file_patch;
 use crate::limits::{MAX_BPS_BYTES, MAX_PATCH_PACKAGE_BYTES, MAX_RECIPE_BYTES, MAX_ZIP_ENTRIES};
-use crate::pipeline::{build_baseline, create_recipe_patch, require_recipe_patch};
-use crate::recipe::{PatchRecipe, parse_recipe};
+use crate::pipeline::{apply_package_contents, create_package_contents};
+use crate::recipe::{FileTransform, PatchRecipe, parse_plan, parse_recipe};
 
 pub const RECIPE_ENTRY_NAME: &str = "recipe.json";
-pub const BPS_ENTRY_NAME: &str = "patch.bps";
+pub const PATCH_DIRECTORY: &str = "patches/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchPackage {
     pub recipe_json: String,
     pub recipe: PatchRecipe,
-    pub patch: Vec<u8>,
+    pub patches: BTreeMap<String, Vec<u8>>,
 }
 
-pub fn create_patch_package(recipe_json: &str, source: &[u8], target: &[u8]) -> Result<Vec<u8>> {
-    let recipe = parse_recipe(recipe_json)?;
-    let patch = create_recipe_patch(&recipe, source, target)?;
-    let package = write_patch_package(recipe_json.as_bytes(), &patch)?;
-    inspect_patch_package(&package).context("verify newly created patch ZIP")?;
+pub fn create_patch_package(
+    plan_json: &str,
+    source: &[u8],
+    content_image: &[u8],
+) -> Result<Vec<u8>> {
+    let plan = parse_plan(plan_json)?;
+    let contents = create_package_contents(plan, source, content_image)?;
+    let package = write_patch_package(contents.recipe_json.as_bytes(), &contents.patches)?;
+    let inspected = inspect_patch_package(&package).context("verify newly created patch ZIP")?;
+    ensure!(
+        inspected.recipe == contents.recipe,
+        "new patch ZIP changed its generated recipe"
+    );
+    let reapplied = apply_package_contents(&inspected.recipe, &inspected.patches, source)
+        .context("self-apply newly created patch ZIP")?;
+    ensure!(
+        reapplied == contents.target,
+        "new patch ZIP did not reproduce its canonical target byte-for-byte"
+    );
     Ok(package)
 }
 
@@ -38,7 +54,8 @@ pub fn inspect_patch_package(package: &[u8]) -> Result<PatchPackage> {
         "patch ZIP has too many entries: {} exceeds {MAX_ZIP_ENTRIES}",
         archive.len()
     );
-    require_conventional_entries(&mut archive)?;
+    let names = collect_entry_names(&mut archive)?;
+    require_single_entry(&names, RECIPE_ENTRY_NAME)?;
 
     let recipe_bytes = read_entry(
         &mut archive,
@@ -48,32 +65,54 @@ pub fn inspect_patch_package(package: &[u8]) -> Result<PatchPackage> {
     let recipe_json = String::from_utf8(recipe_bytes).context("recipe.json is not UTF-8")?;
     let recipe = parse_recipe(&recipe_json).context("parse recipe.json from patch ZIP")?;
 
-    let maximum_patch_bytes = u64::try_from(recipe.target.size)
-        .context("target size does not fit ZIP limits")?
-        .checked_mul(2)
-        .and_then(|size| size.checked_add(MAX_RECIPE_BYTES as u64))
-        .context("BPS size limit overflow")?;
-    ensure!(
-        maximum_patch_bytes <= MAX_BPS_BYTES as u64,
-        "BPS size limit exceeds the application budget"
-    );
-    let patch = read_entry(&mut archive, BPS_ENTRY_NAME, maximum_patch_bytes)?;
-    require_recipe_patch(&recipe, &patch).context("validate patch.bps against recipe.json")?;
+    let expected_entries = recipe
+        .assembly
+        .placed_files
+        .iter()
+        .filter(|file| matches!(file.transform, FileTransform::Bps { .. }))
+        .map(|file| (file.name.clone(), patch_entry_name(&file.name)))
+        .collect::<BTreeMap<_, _>>();
+    require_patch_entries(&names, &expected_entries)?;
+
+    let mut extracted_bytes = 0usize;
+    let mut patches = BTreeMap::new();
+    for file in &recipe.assembly.placed_files {
+        if !matches!(file.transform, FileTransform::Bps { .. }) {
+            continue;
+        }
+        let entry_name = expected_entries
+            .get(&file.name)
+            .expect("entry names were derived from placed files");
+        let patch = read_entry(&mut archive, entry_name, MAX_BPS_BYTES as u64)?;
+        extracted_bytes = extracted_bytes
+            .checked_add(patch.len())
+            .context("total BPS payload size overflow")?;
+        ensure!(
+            extracted_bytes <= MAX_BPS_BYTES,
+            "BPS payloads expand to {extracted_bytes} bytes, exceeding {MAX_BPS_BYTES}"
+        );
+        inspect_file_patch(&recipe.id, file, &patch)
+            .with_context(|| format!("validate {entry_name}"))?;
+        patches.insert(file.name.clone(), patch);
+    }
 
     Ok(PatchPackage {
         recipe_json,
         recipe,
-        patch,
+        patches,
     })
 }
 
 pub fn apply_patch_package(source: &[u8], package: &[u8]) -> Result<Vec<u8>> {
     let contents = inspect_patch_package(package)?;
-    let baseline = build_baseline(&contents.recipe, source)?;
-    crate::pipeline::apply_recipe_patch(&contents.recipe, &baseline, &contents.patch)
+    apply_package_contents(&contents.recipe, &contents.patches, source)
 }
 
-fn write_patch_package(recipe_json: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
+pub fn patch_entry_name(output_name: &str) -> String {
+    format!("{PATCH_DIRECTORY}{output_name}.bps")
+}
+
+fn write_patch_package(recipe_json: &[u8], patches: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
     let output = Cursor::new(Vec::new());
     let mut archive = ZipWriter::new(output);
     let options = SimpleFileOptions::default()
@@ -88,39 +127,58 @@ fn write_patch_package(recipe_json: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
     archive
         .write_all(recipe_json)
         .context("write recipe.json to patch ZIP")?;
-    archive
-        .start_file(BPS_ENTRY_NAME, options)
-        .context("start patch.bps in patch ZIP")?;
-    archive
-        .write_all(patch)
-        .context("write patch.bps to patch ZIP")?;
+    for (name, patch) in patches {
+        let entry_name = patch_entry_name(name);
+        archive
+            .start_file(&entry_name, options)
+            .with_context(|| format!("start {entry_name} in patch ZIP"))?;
+        archive
+            .write_all(patch)
+            .with_context(|| format!("write {entry_name} to patch ZIP"))?;
+    }
 
     Ok(archive.finish().context("finish patch ZIP")?.into_inner())
 }
 
-fn require_conventional_entries(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<()> {
-    let mut has_recipe = false;
-    let mut has_patch = false;
+fn collect_entry_names(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<BTreeMap<String, usize>> {
+    let mut names = BTreeMap::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index(index)
             .with_context(|| format!("read patch ZIP entry {index}"))?;
-        match entry.name() {
-            RECIPE_ENTRY_NAME if !has_recipe => has_recipe = true,
-            BPS_ENTRY_NAME if !has_patch => has_patch = true,
-            RECIPE_ENTRY_NAME => bail!("patch ZIP contains duplicate {RECIPE_ENTRY_NAME}"),
-            BPS_ENTRY_NAME => bail!("patch ZIP contains duplicate {BPS_ENTRY_NAME}"),
-            _ => {}
-        }
+        let count = names.entry(entry.name().to_owned()).or_insert(0usize);
+        *count = count
+            .checked_add(1)
+            .context("patch ZIP duplicate count overflow")?;
     }
+    Ok(names)
+}
+
+fn require_single_entry(names: &BTreeMap<String, usize>, name: &str) -> Result<()> {
+    match names.get(name).copied().unwrap_or_default() {
+        1 => Ok(()),
+        0 => anyhow::bail!("patch ZIP is missing root entry {name}"),
+        count => anyhow::bail!("patch ZIP contains {count} entries named {name}"),
+    }
+}
+
+fn require_patch_entries(
+    names: &BTreeMap<String, usize>,
+    expected_entries: &BTreeMap<String, String>,
+) -> Result<()> {
+    let expected = expected_entries.values().cloned().collect::<BTreeSet<_>>();
+    let actual = names
+        .keys()
+        .filter(|name| name.starts_with(PATCH_DIRECTORY))
+        .cloned()
+        .collect::<BTreeSet<_>>();
     ensure!(
-        has_recipe,
-        "patch ZIP is missing root entry {RECIPE_ENTRY_NAME}"
+        actual == expected,
+        "patch ZIP file-patch entries differ: expected {expected:?}, got {actual:?}"
     );
-    ensure!(
-        has_patch,
-        "patch ZIP is missing root entry {BPS_ENTRY_NAME}"
-    );
+    for name in expected {
+        require_single_entry(names, &name)?;
+    }
     Ok(())
 }
 

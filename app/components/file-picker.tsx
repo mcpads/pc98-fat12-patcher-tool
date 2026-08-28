@@ -10,6 +10,7 @@ type FilePickerProps = {
   hint: string;
   label: string;
   onChange: (file: File | null) => void;
+  validation?: 'unchecked' | 'valid' | 'invalid';
 };
 
 function formatBytes(bytes: number) {
@@ -26,6 +27,7 @@ export function FilePicker({
   hint,
   label,
   onChange,
+  validation = 'unchecked',
 }: FilePickerProps) {
   const inputId = useId();
   const hintId = useId();
@@ -88,10 +90,11 @@ export function FilePicker({
         {label}
       </label>
       <button
-        className={`file-drop ${file ? 'has-file' : ''}`}
+        className={`file-drop ${file ? `has-file is-${validation}` : ''}`}
         type="button"
         disabled={disabled}
         aria-describedby={hintId}
+        aria-invalid={file && validation === 'invalid' ? true : undefined}
         onClick={openPicker}
       >
         <span className="file-badge" aria-hidden="true">{badge}</span>

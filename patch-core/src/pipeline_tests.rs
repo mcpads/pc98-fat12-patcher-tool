@@ -1,18 +1,13 @@
-use std::collections::BTreeMap;
-use std::io::{Cursor, Write};
-
-use fatfs::{FileSystem, FsOptions};
-
 use super::*;
-use crate::fat12::assemble_baseline;
-use crate::hash::sha256_hex;
-use crate::test_support::{direct_root_recipe, fixture_image};
+use crate::recipe::{FileSource, PlannedTransform};
+use crate::test_support::{content_image, direct_root_plan, fixture_image};
 
-fn fixture_product() -> (Vec<u8>, PatchRecipe, Vec<u8>) {
+fn fixture_product() -> (Vec<u8>, PatchPlan, Vec<u8>) {
     let retained = b"system";
     let payload = b"original game payload";
+    let localized = b"localized game payload that grows";
     let source = fixture_image(&[("SYSTEM.SYS", retained), ("INSTALL.BIN", payload)], false);
-    let mut recipe = direct_root_recipe(
+    let plan = direct_root_plan(
         &source,
         "SYSTEM.SYS",
         retained,
@@ -20,71 +15,104 @@ fn fixture_product() -> (Vec<u8>, PatchRecipe, Vec<u8>) {
         "GAME.COM",
         payload,
     );
-    let placed = BTreeMap::from([("GAME.COM".to_owned(), payload.to_vec())]);
-    let baseline = assemble_baseline(&source, &recipe, &placed).unwrap();
-    recipe.assembly.baseline_sha256 = sha256_hex(&baseline);
-
-    let mut target = baseline.clone();
-    {
-        let filesystem =
-            FileSystem::new(Cursor::new(target.as_mut_slice()), FsOptions::new()).unwrap();
-        let root = filesystem.root_dir();
-        let mut game = root.open_file("GAME.COM").unwrap();
-        game.write_all(b"KOREAN!!").unwrap();
-        drop(game);
-        drop(root);
-        filesystem.unmount().unwrap();
-    }
-    recipe.target.sha256 = sha256_hex(&target);
-    (source, recipe, target)
+    let mut content = content_image(&source, &plan, &[("GAME.COM", localized)]);
+    let last = content.len() - 1;
+    content[last] = 0x7b;
+    (source, plan, content)
 }
 
 #[test]
-fn complete_pipeline_rebuilds_baseline_and_applies_bps_exactly() {
-    let (source, recipe, target) = fixture_product();
-    let patch = create_recipe_patch(&recipe, &source, &target).unwrap();
-    let baseline = build_baseline(&recipe, &source).unwrap();
-    let applied = apply_recipe_patch(&recipe, &baseline, &patch).unwrap();
-    assert_eq!(applied, target);
+fn complete_pipeline_patches_logical_files_and_rebuilds_the_image() {
+    let (source, plan, content) = fixture_product();
+    let created = create_package_contents(plan, &source, &content).unwrap();
+    let applied = apply_package_contents(&created.recipe, &created.patches, &source).unwrap();
+
+    assert_eq!(applied, created.target);
+    assert_ne!(
+        applied, content,
+        "the canonical image need not preserve donor slack"
+    );
+}
+
+#[test]
+fn pipeline_rejects_an_assembled_image_with_another_target_identity() {
+    let (source, plan, content) = fixture_product();
+    let created = create_package_contents(plan, &source, &content).unwrap();
+    let mut recipe = created.recipe;
+    recipe.target.sha256 = "0".repeat(64);
+
+    let error = apply_package_contents(&recipe, &created.patches, &source)
+        .expect_err("another target identity must not produce a result")
+        .to_string();
+
+    assert!(error.contains("target image SHA-256 mismatch"));
+}
+
+#[test]
+fn complete_pipeline_creates_a_new_file_from_an_empty_bps_source() {
+    let retained = b"system";
+    let generated_font = b"generated Korean font records";
+    let source = fixture_image(&[("SYSTEM.SYS", retained)], false);
+    let mut plan = direct_root_plan(
+        &source,
+        "SYSTEM.SYS",
+        retained,
+        "UNUSED.BIN",
+        "KIKIKR.FNT",
+        b"",
+    );
+    plan.assembly.placed_files[0].source = FileSource::Empty;
+    let content = content_image(&source, &plan, &[("KIKIKR.FNT", generated_font)]);
+
+    let created = create_package_contents(plan, &source, &content).unwrap();
+    let applied = apply_package_contents(&created.recipe, &created.patches, &source).unwrap();
+
+    assert_eq!(applied, created.target);
+    assert!(created.patches.contains_key("KIKIKR.FNT"));
+    let files = crate::fat12::read_root_files(
+        &applied,
+        crate::recipe::MountPolicy::Standard,
+        &BTreeSet::from(["KIKIKR.FNT".to_owned()]),
+    )
+    .unwrap();
+    assert_eq!(files["KIKIKR.FNT"], generated_font);
 }
 
 #[test]
 fn pipeline_rejects_another_source_before_file_collection() {
-    let (mut source, recipe, target) = fixture_product();
-    let baseline = build_baseline(&recipe, &source).unwrap();
-    let patch = bps::create_patch(&baseline, &target, &encode_metadata(&recipe).unwrap()).unwrap();
+    let (mut source, plan, content) = fixture_product();
     let last = source.len() - 1;
     source[last] ^= 1;
-    let error = build_baseline(&recipe, &source).unwrap_err().to_string();
-    assert!(error.contains("source image SHA-256 mismatch"));
-    assert!(apply_recipe_patch(&recipe, &baseline, &patch).is_ok());
-}
-
-#[test]
-fn patch_for_another_recipe_is_rejected_even_when_bytes_fit() {
-    let (source, recipe, target) = fixture_product();
-    let baseline = build_baseline(&recipe, &source).unwrap();
-    let mut other = recipe.clone();
-    other.id = "another-patch".to_owned();
-    let patch = bps::create_patch(&baseline, &target, &encode_metadata(&other).unwrap()).unwrap();
-    let error = apply_recipe_patch(&recipe, &baseline, &patch)
-        .unwrap_err()
+    let error = create_package_contents(plan, &source, &content)
+        .err()
+        .expect("wrong source must fail")
         .to_string();
-    assert!(error.contains("BPS recipe id mismatch"));
+    assert!(error.contains("source image SHA-256 mismatch"));
 }
 
 #[test]
-fn recipe_author_cannot_pin_a_target_with_divergent_fat_mirrors() {
-    let (source, mut recipe, mut target) = fixture_product();
-    let geometry = &recipe.source.geometry;
+fn copy_transform_rejects_changed_content() {
+    let (source, mut plan, content) = fixture_product();
+    plan.assembly.placed_files[0].transform = PlannedTransform::Copy;
+    let error = create_package_contents(plan, &source, &content)
+        .err()
+        .expect("changed copy input must fail")
+        .to_string();
+    assert!(error.contains("declared copy but content image changes it"));
+}
+
+#[test]
+fn content_image_with_divergent_fat_mirrors_is_rejected() {
+    let (source, plan, mut content) = fixture_product();
+    let geometry = &plan.source.geometry;
     let first_fat = usize::from(geometry.bytes_per_sector) * usize::from(geometry.reserved_sectors);
     let second_fat =
         first_fat + usize::from(geometry.bytes_per_sector) * usize::from(geometry.sectors_per_fat);
-    target[second_fat + 8] ^= 1;
-    recipe.target.sha256 = sha256_hex(&target);
+    content[second_fat + 8] ^= 1;
 
-    let error = create_recipe_patch(&recipe, &source, &target)
-        .unwrap_err()
+    let error = create_package_contents(plan, &source, &content)
+        .err()
+        .expect("divergent FAT mirror must fail")
         .to_string();
     assert!(error.contains("FAT mirror 1 differs"));
 }

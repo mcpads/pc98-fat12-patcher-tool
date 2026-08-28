@@ -1,19 +1,20 @@
-use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
 
-use fatfs::{FileSystem, FsOptions};
 use zip::ZipArchive;
 
 use super::*;
-use crate::fat12::assemble_baseline;
-use crate::hash::sha256_hex;
-use crate::test_support::{direct_root_recipe, fixture_image};
+use crate::pipeline::create_package_contents;
+use crate::test_support::{content_image, direct_root_plan, fixture_image};
 
-fn fixture_product() -> (Vec<u8>, PatchRecipe, Vec<u8>) {
+fn fixture_product(include_directory: bool) -> (Vec<u8>, crate::recipe::PatchPlan, Vec<u8>) {
     let retained = b"system";
     let payload = b"original game payload";
-    let source = fixture_image(&[("SYSTEM.SYS", retained), ("INSTALL.BIN", payload)], false);
-    let mut recipe = direct_root_recipe(
+    let localized = b"localized game payload";
+    let source = fixture_image(
+        &[("SYSTEM.SYS", retained), ("INSTALL.BIN", payload)],
+        include_directory,
+    );
+    let plan = direct_root_plan(
         &source,
         "SYSTEM.SYS",
         retained,
@@ -21,31 +22,16 @@ fn fixture_product() -> (Vec<u8>, PatchRecipe, Vec<u8>) {
         "GAME.COM",
         payload,
     );
-    let placed = BTreeMap::from([("GAME.COM".to_owned(), payload.to_vec())]);
-    let baseline = assemble_baseline(&source, &recipe, &placed).unwrap();
-    recipe.assembly.baseline_sha256 = sha256_hex(&baseline);
-
-    let mut target = baseline.clone();
-    {
-        let filesystem =
-            FileSystem::new(Cursor::new(target.as_mut_slice()), FsOptions::new()).unwrap();
-        let root = filesystem.root_dir();
-        let mut game = root.open_file("GAME.COM").unwrap();
-        game.write_all(b"KOREAN!!").unwrap();
-        drop(game);
-        drop(root);
-        filesystem.unmount().unwrap();
-    }
-    recipe.target.sha256 = sha256_hex(&target);
-    (source, recipe, target)
+    let content = content_image(&source, &plan, &[("GAME.COM", localized)]);
+    (source, plan, content)
 }
 
 #[test]
-fn package_contains_only_the_two_conventional_root_entries() {
-    let (source, recipe, target) = fixture_product();
-    let recipe_json = serde_json::to_string_pretty(&recipe).unwrap();
-    let package = create_patch_package(&recipe_json, &source, &target).unwrap();
-    let second_package = create_patch_package(&recipe_json, &source, &target).unwrap();
+fn package_contains_recipe_and_one_patch_per_changed_logical_file() {
+    let (source, plan, content) = fixture_product(false);
+    let plan_json = serde_json::to_string_pretty(&plan).unwrap();
+    let package = create_patch_package(&plan_json, &source, &content).unwrap();
+    let second_package = create_patch_package(&plan_json, &source, &content).unwrap();
 
     assert_eq!(
         package, second_package,
@@ -56,67 +42,146 @@ fn package_contains_only_the_two_conventional_root_entries() {
         .map(|index| archive.by_index(index).unwrap().name().to_owned())
         .collect::<Vec<_>>();
     names.sort();
-    assert_eq!(names, [BPS_ENTRY_NAME, RECIPE_ENTRY_NAME]);
+    assert_eq!(
+        names,
+        [patch_entry_name("GAME.COM"), RECIPE_ENTRY_NAME.to_owned()]
+    );
 }
 
 #[test]
-fn package_rebuilds_the_supported_source_and_applies_its_bps() {
-    let (source, recipe, target) = fixture_product();
-    let recipe_json = serde_json::to_string_pretty(&recipe).unwrap();
-    let package = create_patch_package(&recipe_json, &source, &target).unwrap();
+fn package_creation_ignores_content_image_bytes_outside_logical_files() {
+    let (source, plan, content) = fixture_product(false);
+    let mut altered_slack = content.clone();
+    let last = altered_slack.len() - 1;
+    altered_slack[last] ^= 0x5a;
+    let plan_json = serde_json::to_string_pretty(&plan).unwrap();
 
+    let first = create_patch_package(&plan_json, &source, &content).unwrap();
+    let second = create_patch_package(&plan_json, &source, &altered_slack).unwrap();
+
+    assert_eq!(
+        first, second,
+        "content-image slack and unallocated bytes are not package inputs"
+    );
+}
+
+#[test]
+fn package_applies_to_exact_source_and_removes_unlisted_directories() {
+    let (source, plan, content) = fixture_product(true);
+    let plan_json = serde_json::to_string_pretty(&plan).unwrap();
+    let package = create_patch_package(&plan_json, &source, &content).unwrap();
     let contents = inspect_patch_package(&package).unwrap();
-    assert_eq!(contents.recipe, recipe);
-    assert_eq!(contents.recipe_json, recipe_json);
-    assert_eq!(apply_patch_package(&source, &package).unwrap(), target);
+    let applied = apply_patch_package(&source, &package).unwrap();
+
+    assert_eq!(contents.patches.len(), 1);
+    assert_eq!(
+        crate::hash::sha256_hex(&applied),
+        contents.recipe.target.sha256
+    );
 }
 
 #[test]
 fn package_ignores_an_unrelated_document_without_extracting_it() {
-    let (source, recipe, target) = fixture_product();
-    let recipe_json = serde_json::to_string_pretty(&recipe).unwrap();
-    let patch = create_recipe_patch(&recipe, &source, &target).unwrap();
+    let (source, plan, content) = fixture_product(false);
+    let created = create_package_contents(plan, &source, &content).unwrap();
+    let patch = created.patches.get("GAME.COM").unwrap();
     let package = write_package_entries(&[
-        (RECIPE_ENTRY_NAME, recipe_json.as_bytes()),
-        (BPS_ENTRY_NAME, &patch),
+        (RECIPE_ENTRY_NAME, created.recipe_json.as_bytes()),
+        (&patch_entry_name("GAME.COM"), patch),
         ("README.txt", b"human-readable release notes"),
     ]);
 
-    assert_eq!(apply_patch_package(&source, &package).unwrap(), target);
+    assert!(apply_patch_package(&source, &package).is_ok());
 }
 
 #[test]
 fn package_requires_the_conventional_recipe_name_at_the_archive_root() {
-    let (source, recipe, target) = fixture_product();
-    let recipe_json = serde_json::to_string_pretty(&recipe).unwrap();
-    let patch = create_recipe_patch(&recipe, &source, &target).unwrap();
-    let package = write_package_entries(&[
-        ("patch/recipe.json", recipe_json.as_bytes()),
-        (BPS_ENTRY_NAME, &patch),
-    ]);
-
+    let package = write_package_entries(&[("patch/recipe.json", b"{}")]);
     let error = inspect_patch_package(&package).unwrap_err().to_string();
     assert!(error.contains("missing root entry recipe.json"));
 }
 
 #[test]
+fn web_reader_hides_parser_internals_for_an_old_whole_image_package() {
+    let old_recipe = br#"{
+        "id": "old-whole-image-package",
+        "title": "Old whole-image package",
+        "output_filename": "patched.hdm",
+        "assembly": {
+            "baseline_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "retained_files": [],
+            "placed_files": []
+        }
+    }"#;
+    let package = write_package_entries(&[(RECIPE_ENTRY_NAME, old_recipe)]);
+
+    let error = crate::read_patch_package_recipe_for_web(&package).unwrap_err();
+
+    assert_eq!(
+        error,
+        "이 패치 ZIP은 현재 지원하는 파일별 패치 형식이 아닙니다. 이 패처용 ZIP을 선택하세요."
+    );
+    assert!(!error.contains("baseline_sha256"));
+    assert!(!error.contains("unknown field"));
+    assert!(!error.contains("line"));
+}
+
+#[test]
+fn web_reader_hides_archive_internals_for_a_non_zip_file() {
+    let error = crate::read_patch_package_recipe_for_web(b"not a ZIP file").unwrap_err();
+
+    assert_eq!(
+        error,
+        "패치 ZIP을 읽을 수 없습니다. 올바른 PC-98 FAT12 패치 ZIP인지 확인하세요."
+    );
+    assert!(!error.contains("open patch ZIP"));
+    assert!(!error.contains("invalid Zip archive"));
+}
+
+#[test]
+fn package_requires_exactly_the_declared_file_patch_set() {
+    let (source, plan, content) = fixture_product(false);
+    let created = create_package_contents(plan, &source, &content).unwrap();
+    let missing = write_package_entries(&[(RECIPE_ENTRY_NAME, created.recipe_json.as_bytes())]);
+    assert!(
+        inspect_patch_package(&missing)
+            .unwrap_err()
+            .to_string()
+            .contains("file-patch entries differ")
+    );
+
+    let patch = created.patches.get("GAME.COM").unwrap();
+    let extra = write_package_entries(&[
+        (RECIPE_ENTRY_NAME, created.recipe_json.as_bytes()),
+        (&patch_entry_name("GAME.COM"), patch),
+        ("patches/OTHER.COM.bps", patch),
+    ]);
+    assert!(
+        inspect_patch_package(&extra)
+            .unwrap_err()
+            .to_string()
+            .contains("file-patch entries differ")
+    );
+}
+
+#[test]
 fn package_rejects_a_bps_bound_to_another_recipe() {
-    let (source, recipe, target) = fixture_product();
-    let recipe_json = serde_json::to_string_pretty(&recipe).unwrap();
-    let mut other_recipe = recipe.clone();
+    let (source, plan, content) = fixture_product(false);
+    let created = create_package_contents(plan, &source, &content).unwrap();
+    let mut other_recipe = created.recipe;
     other_recipe.id = "another-patch".to_owned();
-    let other_patch = create_recipe_patch(&other_recipe, &source, &target).unwrap();
-    let package = write_patch_package(recipe_json.as_bytes(), &other_patch).unwrap();
+    let other_json = format!("{}\n", serde_json::to_string_pretty(&other_recipe).unwrap());
+    let package = write_patch_package(other_json.as_bytes(), &created.patches).unwrap();
 
     let error = format!("{:#}", inspect_patch_package(&package).unwrap_err());
-    assert!(error.contains("BPS recipe id mismatch"));
+    assert!(error.contains("metadata"));
 }
 
 #[test]
 fn package_rejects_a_source_that_does_not_match_the_recipe() {
-    let (mut source, recipe, target) = fixture_product();
-    let recipe_json = serde_json::to_string_pretty(&recipe).unwrap();
-    let package = create_patch_package(&recipe_json, &source, &target).unwrap();
+    let (mut source, plan, content) = fixture_product(false);
+    let plan_json = serde_json::to_string_pretty(&plan).unwrap();
+    let package = create_patch_package(&plan_json, &source, &content).unwrap();
     let last = source.len() - 1;
     source[last] ^= 1;
 
@@ -129,10 +194,7 @@ fn package_rejects_a_source_that_does_not_match_the_recipe() {
 #[test]
 fn package_rejects_a_recipe_entry_that_exceeds_its_decode_budget() {
     let oversized_recipe = vec![b' '; MAX_RECIPE_BYTES + 1];
-    let package = write_package_entries(&[
-        (RECIPE_ENTRY_NAME, &oversized_recipe),
-        (BPS_ENTRY_NAME, b"BPS1"),
-    ]);
+    let package = write_package_entries(&[(RECIPE_ENTRY_NAME, &oversized_recipe)]);
 
     let error = inspect_patch_package(&package).unwrap_err().to_string();
     assert!(error.contains("recipe.json is too large"));

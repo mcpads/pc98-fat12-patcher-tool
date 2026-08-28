@@ -146,8 +146,14 @@ button:focus-visible, a:focus-visible {
 .file-drop:disabled { opacity: .5; cursor: not-allowed; pointer-events: none; }
 .file-drop.has-file {
   border-style: solid;
+}
+.file-drop.has-file.is-valid {
   border-color: #7fae9b;
   background: #f7fbf9;
+}
+.file-drop.has-file.is-invalid {
+  border-color: #c77f75;
+  background: #fff8f6;
 }
 .picker.is-dragging .file-drop {
   border-style: solid;
@@ -193,33 +199,6 @@ button:focus-visible, a:focus-visible {
 }
 .file-clear:hover { color: var(--error); }
 .file-error { margin: 8px 0 0; color: var(--error); font-size: 12px; }
-
-.definition-notice,
-.hosted-definition {
-  margin: 16px 0 0;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fafbfa;
-  color: var(--muted);
-  font-size: 13px;
-}
-.definition-notice.is-error { border-color: #d9a194; color: var(--error); background: #fff8f6; }
-.hosted-definition { display: flex; align-items: center; gap: 11px; color: var(--ink); }
-.hosted-mark {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--green);
-  color: #fff;
-  font-weight: 800;
-}
-.hosted-definition strong,
-.hosted-definition small { display: block; }
-.hosted-definition small { margin-top: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 
 .identity-row {
   display: grid;

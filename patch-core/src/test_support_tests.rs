@@ -1,11 +1,13 @@
+use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
 
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions, format_volume};
 
+use crate::fat12::assemble_image;
 use crate::hash::sha256_hex;
 use crate::recipe::{
-    AssemblyRecipe, ExactFile, Fat12Geometry, FileSource, MountPolicy, PatchRecipe, PlacedFile,
-    SourceImage, TargetImage,
+    ExactFile, Fat12Geometry, FileSource, MountPolicy, PatchPlan, PlannedAssemblyRecipe,
+    PlannedFile, PlannedTransform, SourceImage,
 };
 
 pub(crate) const FIXTURE_SIZE: usize = 1_474_560;
@@ -57,15 +59,15 @@ pub(crate) fn fixture_image(files: &[(&str, &[u8])], include_directory: bool) ->
     image
 }
 
-pub(crate) fn direct_root_recipe(
+pub(crate) fn direct_root_plan(
     source: &[u8],
     retained_name: &str,
     retained_bytes: &[u8],
     input_name: &str,
     output_name: &str,
-    output_bytes: &[u8],
-) -> PatchRecipe {
-    PatchRecipe {
+    input_bytes: &[u8],
+) -> PatchPlan {
+    PatchPlan {
         id: "fixture-patch".to_owned(),
         title: "Fixture Patch".to_owned(),
         output_filename: "fixture-patched.hdm".to_owned(),
@@ -75,25 +77,42 @@ pub(crate) fn direct_root_recipe(
             geometry: fixture_geometry(),
             mount_policy: MountPolicy::Standard,
         },
-        assembly: AssemblyRecipe {
-            baseline_sha256: "0".repeat(64),
+        assembly: PlannedAssemblyRecipe {
             retained_files: vec![ExactFile {
                 name: retained_name.to_owned(),
                 size: retained_bytes.len(),
                 sha256: sha256_hex(retained_bytes),
             }],
-            placed_files: vec![PlacedFile {
+            placed_files: vec![PlannedFile {
                 name: output_name.to_owned(),
                 source: FileSource::RootFile {
                     name: input_name.to_owned(),
                 },
-                size: output_bytes.len(),
-                sha256: sha256_hex(output_bytes),
+                source_size: input_bytes.len(),
+                source_sha256: sha256_hex(input_bytes),
+                transform: PlannedTransform::Bps,
             }],
         },
-        target: TargetImage {
-            size: source.len(),
-            sha256: "0".repeat(64),
-        },
     }
+}
+
+pub(crate) fn content_image(source: &[u8], plan: &PatchPlan, files: &[(&str, &[u8])]) -> Vec<u8> {
+    let placed = files
+        .iter()
+        .map(|(name, bytes)| ((*name).to_owned(), (*bytes).to_vec()))
+        .collect::<BTreeMap<_, _>>();
+    let names = plan
+        .assembly
+        .placed_files
+        .iter()
+        .map(|file| file.name.clone())
+        .collect::<Vec<_>>();
+    assemble_image(
+        source,
+        &plan.source,
+        &plan.assembly.retained_files,
+        &names,
+        &placed,
+    )
+    .unwrap()
 }

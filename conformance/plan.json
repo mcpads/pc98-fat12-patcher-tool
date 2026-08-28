@@ -1,0 +1,56 @@
+{
+  "assembly": {
+    "placed_files": [
+      {
+        "name": "ZNEW.BIN",
+        "source": {
+          "kind": "root_file",
+          "name": "OLD1.BIN"
+        },
+        "source_sha256": "f8b1b4beb959d41c74d8ad6acd030916fed1cc634eaf29e26aa3e6841143cc11",
+        "source_size": 700,
+        "transform": {
+          "kind": "bps"
+        }
+      },
+      {
+        "name": "ANEW.BIN",
+        "source": {
+          "kind": "empty"
+        },
+        "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "source_size": 0,
+        "transform": {
+          "kind": "bps"
+        }
+      }
+    ],
+    "retained_files": [
+      {
+        "name": "KEEP.SYS",
+        "sha256": "bbc5e661e106c6dcd8dc6dd186454c2fcba3c710fb4d8e71a60c93eaf077f073",
+        "size": 6
+      }
+    ]
+  },
+  "id": "canonical-fat12-conformance",
+  "output_filename": "conformance-target.hdm",
+  "source": {
+    "geometry": {
+      "bytes_per_sector": 512,
+      "fat_count": 2,
+      "heads": 2,
+      "media_descriptor": 240,
+      "reserved_sectors": 1,
+      "root_entries": 16,
+      "sectors_per_cluster": 1,
+      "sectors_per_fat": 1,
+      "sectors_per_track": 8,
+      "total_sectors": 64
+    },
+    "mount_policy": "standard",
+    "sha256": "a6815c75ed1415893aa4dcba86e6c65688f009606fd48ea3a04f29e2f6b42048",
+    "size": 32768
+  },
+  "title": "Canonical FAT12 conformance fixture"
+}
