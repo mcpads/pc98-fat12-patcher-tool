@@ -51,7 +51,6 @@ await cp(clientDirectory, siteDirectory, { recursive: true });
 await Promise.all([
   rm(path.join(siteDirectory, '.assetsignore'), { force: true }),
   rm(path.join(siteDirectory, '.vite'), { recursive: true, force: true }),
-  rm(path.join(siteDirectory, '_headers'), { force: true }),
   rm(path.join(siteDirectory, 'vinext-client-entry-manifest.json'), { force: true }),
 ]);
 

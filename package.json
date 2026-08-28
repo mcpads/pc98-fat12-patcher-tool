@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build && node scripts/prepare-static-site.mjs",
+    "deploy": "npm run build && wrangler deploy --config cloudflare/wrangler.jsonc",
+    "deploy:dry-run": "npm run build && wrangler deploy --config cloudflare/wrangler.jsonc --dry-run",
     "preview:static": "vite preview --config vite.static-preview.config.ts --outDir dist/site",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern wasm --ignore-pattern work",
@@ -34,7 +36,8 @@
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "vinext": "1.0.0-beta.8",
-    "vite": "8.2.2"
+    "vite": "8.2.2",
+    "wrangler": "4.127.0"
   },
   "type": "module"
 }
