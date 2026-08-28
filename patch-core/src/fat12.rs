@@ -1,33 +1,75 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 use anyhow::{Context, Result, ensure};
-use fatfs::{DirEntry, FatType, FileSystem, FsOptions, ReadWriteSeek};
 
+use crate::fat_name::FatShortName;
 use crate::hash::require_sha256;
 use crate::limits::MAX_FAT_DIRECTORY_DEPTH;
 use crate::recipe::{ExactFile, Fat12Geometry, MountPolicy, SourceImage};
 
-const HIDDEN_SECTORS_OFFSET: usize = 28;
-const TOTAL_SECTORS_32_OFFSET: usize = 32;
-const IBM_SIGNATURE_OFFSET: usize = 510;
+const DIRECTORY_ENTRY_BYTES: usize = 32;
+const ATTRIBUTE_OFFSET: usize = 11;
+const FIRST_CLUSTER_OFFSET: usize = 26;
+const FILE_SIZE_OFFSET: usize = 28;
+const LONG_NAME_ATTRIBUTE: u8 = 0x0f;
+const VOLUME_ATTRIBUTE: u8 = 0x08;
+const DIRECTORY_ATTRIBUTE: u8 = 0x10;
+const END_OF_CHAIN_MINIMUM: u16 = 0x0ff8;
+const END_OF_CHAIN: u16 = 0x0fff;
+
+#[derive(Debug, Clone)]
+struct Fat12Layout {
+    cluster_size: usize,
+    fat_offsets: Vec<usize>,
+    fat_size: usize,
+    root_offset: usize,
+    root_bytes: usize,
+    data_offset: usize,
+    maximum_cluster: u16,
+}
+
+#[derive(Debug, Clone)]
+struct DirectoryRecord {
+    offset: usize,
+    long_name_offsets: Vec<usize>,
+    raw_name: [u8; 11],
+    attributes: u8,
+    first_cluster: u16,
+    file_size: usize,
+}
+
+impl DirectoryRecord {
+    fn is_directory(&self) -> bool {
+        self.attributes & DIRECTORY_ATTRIBUTE != 0
+    }
+
+    fn is_volume_label(&self) -> bool {
+        self.attributes & VOLUME_ATTRIBUTE != 0
+    }
+
+    fn is_dot_entry(&self) -> bool {
+        self.raw_name[0] == b'.' && (self.raw_name[1] == b' ' || self.raw_name[1] == b'.')
+    }
+}
 
 pub(crate) fn read_root_files(
     image: &[u8],
-    policy: MountPolicy,
-    names: &BTreeSet<String>,
-) -> Result<BTreeMap<String, Vec<u8>>> {
-    let mount_image = mount_copy(image, policy)?;
-    let filesystem = FileSystem::new(Cursor::new(mount_image), FsOptions::new())
-        .context("mount source FAT12 image")?;
-    ensure!(
-        matches!(filesystem.fat_type(), FatType::Fat12),
-        "source filesystem is not FAT12"
-    );
-    let root = filesystem.root_dir();
+    _policy: MountPolicy,
+    names: &BTreeSet<[u8; 11]>,
+) -> Result<BTreeMap<[u8; 11], Vec<u8>>> {
+    let geometry = parse_geometry(image)?;
+    geometry.validate(image.len())?;
+    let layout = Fat12Layout::new(&geometry, image.len())?;
+    verify_fat_mirrors(image, &layout)?;
+    let records = scan_directory(image, root_entry_offsets(&layout))?;
     let mut files = BTreeMap::new();
     for name in names {
-        files.insert(name.clone(), read_root_file(&root, name, image.len())?);
+        let entry = require_unique_file(&records, name)?;
+        files.insert(
+            *name,
+            read_file(image, &layout, entry, image.len())
+                .with_context(|| format!("read FAT12 file {}", raw_name_label(name)))?,
+        );
     }
     Ok(files)
 }
@@ -36,46 +78,45 @@ pub(crate) fn assemble_image(
     source: &[u8],
     source_profile: &SourceImage,
     retained_files: &[ExactFile],
-    placed_file_names: &[String],
-    placed_files: &BTreeMap<String, Vec<u8>>,
+    placed_files: &[(String, FatShortName)],
+    placed_file_bytes: &BTreeMap<String, Vec<u8>>,
 ) -> Result<Vec<u8>> {
     require_geometry(source, &source_profile.geometry)?;
-    let reserved_len = reserved_region_len(&source_profile.geometry)?;
-    let mut image = mount_copy(source, source_profile.mount_policy)?;
-    {
-        let filesystem = FileSystem::new(Cursor::new(image.as_mut_slice()), FsOptions::new())
-            .context("mount working FAT12 image")?;
-        ensure!(
-            matches!(filesystem.fat_type(), FatType::Fat12),
-            "working filesystem is not FAT12"
-        );
-        let root = filesystem.root_dir();
-        let retained_names: BTreeSet<_> = retained_files
-            .iter()
-            .map(|file| file.name.as_str())
-            .collect();
-        remove_nonretained_entries(&root, &retained_names)?;
-        for expected in retained_files {
-            verify_root_file(&root, expected)?;
-        }
-        for name in placed_file_names {
-            let bytes = placed_files
-                .get(name)
-                .with_context(|| format!("resolved file set is missing {name}"))?;
-            write_root_file(&root, name, bytes)?;
-        }
-        drop(root);
-        filesystem
-            .unmount()
-            .context("unmount assembled FAT12 image")?;
+    let layout = Fat12Layout::new(&source_profile.geometry, source.len())?;
+    verify_fat_mirrors(source, &layout)?;
+
+    let mut retained_names = BTreeSet::new();
+    for file in retained_files {
+        retained_names.insert(file.name.raw_bytes("retained file")?);
     }
-    image[..reserved_len].copy_from_slice(&source[..reserved_len]);
+
+    let mut image = source.to_vec();
+    remove_nonretained_root_entries(&mut image, &layout, &retained_names)?;
+    for expected in retained_files {
+        verify_exact_file(&image, &layout, expected)?;
+    }
+
+    let mut allocation_hint = 2_u16;
+    for (patch_key, name) in placed_files {
+        let bytes = placed_file_bytes
+            .get(patch_key)
+            .with_context(|| format!("resolved file set is missing {patch_key}"))?;
+        write_root_file(
+            &mut image,
+            &layout,
+            name.raw_bytes("placed file name")?,
+            bytes,
+            &mut allocation_hint,
+        )
+        .with_context(|| format!("write FAT12 file {patch_key}"))?;
+    }
+
     verify_image(
         &image,
         source_profile,
         retained_files,
-        placed_file_names,
         placed_files,
+        placed_file_bytes,
     )?;
     Ok(image)
 }
@@ -86,26 +127,100 @@ pub(crate) fn require_geometry(image: &[u8], expected: &Fat12Geometry) -> Result
         observed == *expected,
         "source FAT12 geometry differs: expected {expected:?}, got {observed:?}"
     );
-    Ok(())
+    expected.validate(image.len())
 }
 
 pub(crate) fn require_fat12_structure(
     image: &[u8],
     expected: &Fat12Geometry,
-    policy: MountPolicy,
+    _policy: MountPolicy,
 ) -> Result<()> {
     require_geometry(image, expected)?;
-    verify_fat_mirrors(image, expected)?;
-    let filesystem = FileSystem::new(Cursor::new(mount_copy(image, policy)?), FsOptions::new())
-        .context("mount target FAT12 image")?;
-    ensure!(
-        matches!(filesystem.fat_type(), FatType::Fat12),
-        "target filesystem is not FAT12"
-    );
-    for entry in filesystem.root_dir().iter() {
-        entry.context("enumerate target FAT12 root")?;
+    let layout = Fat12Layout::new(expected, image.len())?;
+    verify_fat_mirrors(image, &layout)?;
+    let mut claimed_clusters = BTreeSet::new();
+    validate_directory(
+        image,
+        &layout,
+        root_entry_offsets(&layout),
+        0,
+        &mut claimed_clusters,
+    )
+}
+
+impl Fat12Layout {
+    fn new(geometry: &Fat12Geometry, image_size: usize) -> Result<Self> {
+        let bytes_per_sector = usize::from(geometry.bytes_per_sector);
+        let cluster_size = bytes_per_sector
+            .checked_mul(usize::from(geometry.sectors_per_cluster))
+            .context("FAT12 cluster size overflow")?;
+        let fat_size = bytes_per_sector
+            .checked_mul(usize::from(geometry.sectors_per_fat))
+            .context("FAT12 table size overflow")?;
+        let first_fat = bytes_per_sector
+            .checked_mul(usize::from(geometry.reserved_sectors))
+            .context("FAT12 table offset overflow")?;
+        let fat_offsets = (0..usize::from(geometry.fat_count))
+            .map(|index| {
+                first_fat
+                    .checked_add(index.checked_mul(fat_size).context("FAT offset overflow")?)
+                    .context("FAT offset overflow")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let root_offset = first_fat
+            .checked_add(
+                usize::from(geometry.fat_count)
+                    .checked_mul(fat_size)
+                    .context("root directory offset overflow")?,
+            )
+            .context("root directory offset overflow")?;
+        let root_bytes = usize::from(geometry.root_entries)
+            .checked_mul(DIRECTORY_ENTRY_BYTES)
+            .context("root directory size overflow")?;
+        let root_sectors = root_bytes.div_ceil(bytes_per_sector);
+        let data_offset = root_offset
+            .checked_add(
+                root_sectors
+                    .checked_mul(bytes_per_sector)
+                    .context("data offset overflow")?,
+            )
+            .context("data offset overflow")?;
+        ensure!(data_offset < image_size, "FAT12 data area is missing");
+        let data_clusters = (image_size - data_offset) / cluster_size;
+        let maximum_cluster = u16::try_from(
+            1_usize
+                .checked_add(data_clusters)
+                .context("FAT12 cluster count overflow")?,
+        )
+        .context("FAT12 cluster count exceeds 16-bit values")?;
+        ensure!(
+            maximum_cluster < 0x0ff0,
+            "image has too many FAT12 clusters"
+        );
+        Ok(Self {
+            cluster_size,
+            fat_offsets,
+            fat_size,
+            root_offset,
+            root_bytes,
+            data_offset,
+            maximum_cluster,
+        })
     }
-    Ok(())
+
+    fn cluster_offset(&self, cluster: u16) -> Result<usize> {
+        ensure!(
+            (2..=self.maximum_cluster).contains(&cluster),
+            "FAT12 chain uses invalid cluster {cluster}"
+        );
+        self.data_offset
+            .checked_add(
+                usize::from(cluster - 2)
+                    .checked_mul(self.cluster_size)
+                    .context("cluster offset overflow")?,
+            )
+            .context("cluster offset overflow")
+    }
 }
 
 fn parse_geometry(image: &[u8]) -> Result<Fat12Geometry> {
@@ -132,137 +247,448 @@ fn parse_geometry(image: &[u8]) -> Result<Fat12Geometry> {
     })
 }
 
-fn mount_copy(image: &[u8], policy: MountPolicy) -> Result<Vec<u8>> {
-    let mut copy = image.to_vec();
-    if policy == MountPolicy::Pc98Dos3 {
-        ensure!(
-            copy.len() > IBM_SIGNATURE_OFFSET + 1,
-            "image is too short for PC-98 DOS 3 FAT compatibility fields"
-        );
-        copy[HIDDEN_SECTORS_OFFSET..TOTAL_SECTORS_32_OFFSET + 4].fill(0);
-        copy[IBM_SIGNATURE_OFFSET..IBM_SIGNATURE_OFFSET + 2].copy_from_slice(&[0x55, 0xaa]);
-    }
-    Ok(copy)
+fn root_entry_offsets(layout: &Fat12Layout) -> Vec<usize> {
+    (0..layout.root_bytes / DIRECTORY_ENTRY_BYTES)
+        .map(|index| layout.root_offset + index * DIRECTORY_ENTRY_BYTES)
+        .collect()
 }
 
-fn remove_nonretained_entries<T: fatfs::ReadWriteSeek>(
-    root: &fatfs::Dir<'_, T>,
-    retained: &BTreeSet<&str>,
-) -> Result<()> {
-    let mut entries = Vec::new();
-    for entry in root.iter() {
-        let entry = entry.context("enumerate source FAT12 root")?;
-        entries.push((short_file_name(&entry)?, entry.is_dir()));
+fn directory_entry_offsets(image: &[u8], layout: &Fat12Layout, cluster: u16) -> Result<Vec<usize>> {
+    let chain = collect_chain_to_end(image, layout, cluster)?;
+    let mut offsets = Vec::new();
+    for cluster in chain {
+        let start = layout.cluster_offset(cluster)?;
+        for relative in (0..layout.cluster_size).step_by(DIRECTORY_ENTRY_BYTES) {
+            offsets.push(start + relative);
+        }
     }
-    for (name, is_directory) in entries {
-        if retained.contains(name.as_str()) {
-            ensure!(!is_directory, "retained root entry is a directory: {name}");
+    Ok(offsets)
+}
+
+fn scan_directory(image: &[u8], offsets: Vec<usize>) -> Result<Vec<DirectoryRecord>> {
+    let mut records = Vec::new();
+    let mut pending_long_names = Vec::new();
+    for offset in offsets {
+        let entry = image
+            .get(offset..offset + DIRECTORY_ENTRY_BYTES)
+            .context("FAT12 directory entry lies outside the image")?;
+        match entry[0] {
+            0x00 => break,
+            0xe5 => {
+                pending_long_names.clear();
+                continue;
+            }
+            _ => {}
+        }
+        if entry[ATTRIBUTE_OFFSET] == LONG_NAME_ATTRIBUTE {
+            pending_long_names.push(offset);
             continue;
         }
-        if is_directory {
-            let directory = root
-                .open_dir(&name)
-                .with_context(|| format!("open root directory {name}"))?;
-            remove_directory_contents(&directory, 1)?;
-            drop(directory);
+        let raw_name = entry[..11]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("truncated FAT12 short name"))?;
+        records.push(DirectoryRecord {
+            offset,
+            long_name_offsets: std::mem::take(&mut pending_long_names),
+            raw_name,
+            attributes: entry[ATTRIBUTE_OFFSET],
+            first_cluster: u16::from_le_bytes([
+                entry[FIRST_CLUSTER_OFFSET],
+                entry[FIRST_CLUSTER_OFFSET + 1],
+            ]),
+            file_size: usize::try_from(u32::from_le_bytes([
+                entry[FILE_SIZE_OFFSET],
+                entry[FILE_SIZE_OFFSET + 1],
+                entry[FILE_SIZE_OFFSET + 2],
+                entry[FILE_SIZE_OFFSET + 3],
+            ]))
+            .context("FAT12 file size does not fit memory")?,
+        });
+    }
+    Ok(records)
+}
+
+fn require_unique_file<'a>(
+    records: &'a [DirectoryRecord],
+    expected_name: &[u8; 11],
+) -> Result<&'a DirectoryRecord> {
+    let mut matching = records
+        .iter()
+        .filter(|entry| !entry.is_volume_label() && entry.raw_name == *expected_name);
+    let entry = matching.next().with_context(|| {
+        format!(
+            "required FAT12 root file is missing: {}",
+            raw_name_label(expected_name)
+        )
+    })?;
+    ensure!(
+        matching.next().is_none(),
+        "duplicate FAT12 root file: {}",
+        raw_name_label(expected_name)
+    );
+    ensure!(
+        !entry.is_directory(),
+        "required FAT12 root entry is a directory: {}",
+        raw_name_label(expected_name)
+    );
+    Ok(entry)
+}
+
+fn read_file(
+    image: &[u8],
+    layout: &Fat12Layout,
+    entry: &DirectoryRecord,
+    maximum_size: usize,
+) -> Result<Vec<u8>> {
+    ensure!(
+        entry.file_size <= maximum_size,
+        "FAT12 file {} is too large: {} bytes exceeds {maximum_size}",
+        raw_name_label(&entry.raw_name),
+        entry.file_size
+    );
+    let chain = collect_file_chain(image, layout, entry.first_cluster, entry.file_size)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(entry.file_size)
+        .context("reserve FAT12 file buffer")?;
+    for cluster in chain {
+        let offset = layout.cluster_offset(cluster)?;
+        let remaining = entry.file_size - bytes.len();
+        let take = remaining.min(layout.cluster_size);
+        bytes.extend_from_slice(
+            image
+                .get(offset..offset + take)
+                .context("FAT12 data cluster lies outside the image")?,
+        );
+    }
+    ensure!(
+        bytes.len() == entry.file_size,
+        "FAT12 file yielded {} bytes, expected {}",
+        bytes.len(),
+        entry.file_size
+    );
+    Ok(bytes)
+}
+
+fn collect_file_chain(
+    image: &[u8],
+    layout: &Fat12Layout,
+    first_cluster: u16,
+    file_size: usize,
+) -> Result<Vec<u16>> {
+    if file_size == 0 {
+        ensure!(
+            first_cluster == 0,
+            "zero-length FAT12 file has start cluster {first_cluster}"
+        );
+        return Ok(Vec::new());
+    }
+    let expected_clusters = file_size.div_ceil(layout.cluster_size);
+    let mut chain = Vec::with_capacity(expected_clusters);
+    let mut visited = BTreeSet::new();
+    let mut cluster = first_cluster;
+    for index in 0..expected_clusters {
+        ensure!(
+            (2..=layout.maximum_cluster).contains(&cluster),
+            "FAT12 file chain uses invalid cluster {cluster}"
+        );
+        ensure!(visited.insert(cluster), "FAT12 file chain contains a loop");
+        chain.push(cluster);
+        let next = fat_value(image, layout, cluster)?;
+        if index + 1 == expected_clusters {
+            ensure!(
+                next >= END_OF_CHAIN_MINIMUM,
+                "FAT12 file chain continues past its declared size"
+            );
+        } else {
+            ensure!(
+                (2..=layout.maximum_cluster).contains(&next),
+                "FAT12 file chain ends before its declared size"
+            );
+            cluster = next;
         }
-        root.remove(&name)
-            .with_context(|| format!("remove source root entry {name}"))?;
+    }
+    Ok(chain)
+}
+
+fn collect_chain_to_end(
+    image: &[u8],
+    layout: &Fat12Layout,
+    first_cluster: u16,
+) -> Result<Vec<u16>> {
+    if first_cluster == 0 {
+        return Ok(Vec::new());
+    }
+    let mut chain = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut cluster = first_cluster;
+    loop {
+        ensure!(
+            (2..=layout.maximum_cluster).contains(&cluster),
+            "FAT12 chain uses invalid cluster {cluster}"
+        );
+        ensure!(visited.insert(cluster), "FAT12 chain contains a loop");
+        chain.push(cluster);
+        let next = fat_value(image, layout, cluster)?;
+        if next >= END_OF_CHAIN_MINIMUM {
+            return Ok(chain);
+        }
+        ensure!(
+            (2..=layout.maximum_cluster).contains(&next),
+            "FAT12 chain points to invalid cluster {next}"
+        );
+        cluster = next;
+    }
+}
+
+fn validate_directory(
+    image: &[u8],
+    layout: &Fat12Layout,
+    offsets: Vec<usize>,
+    depth: usize,
+    claimed_clusters: &mut BTreeSet<u16>,
+) -> Result<()> {
+    ensure!(
+        depth <= MAX_FAT_DIRECTORY_DEPTH,
+        "FAT12 directory nesting exceeds {MAX_FAT_DIRECTORY_DEPTH} levels"
+    );
+    for entry in scan_directory(image, offsets)? {
+        if entry.is_volume_label() || entry.is_dot_entry() {
+            continue;
+        }
+        let chain = if entry.is_directory() {
+            collect_chain_to_end(image, layout, entry.first_cluster)?
+        } else {
+            collect_file_chain(image, layout, entry.first_cluster, entry.file_size)?
+        };
+        for cluster in &chain {
+            ensure!(
+                claimed_clusters.insert(*cluster),
+                "FAT12 entries share allocated cluster {cluster}"
+            );
+        }
+        if entry.is_directory() {
+            let next_depth = depth.checked_add(1).context("directory depth overflow")?;
+            validate_directory(
+                image,
+                layout,
+                directory_entry_offsets(image, layout, entry.first_cluster)?,
+                next_depth,
+                claimed_clusters,
+            )?;
+        }
     }
     Ok(())
 }
 
-fn remove_directory_contents<T: fatfs::ReadWriteSeek>(
-    directory: &fatfs::Dir<'_, T>,
+fn remove_nonretained_root_entries(
+    image: &mut [u8],
+    layout: &Fat12Layout,
+    retained: &BTreeSet<[u8; 11]>,
+) -> Result<()> {
+    let records = scan_directory(image, root_entry_offsets(layout))?;
+    for entry in records {
+        if entry.is_volume_label() {
+            continue;
+        }
+        if retained.contains(&entry.raw_name) {
+            ensure!(
+                !entry.is_directory(),
+                "retained root entry is a directory: {}",
+                raw_name_label(&entry.raw_name)
+            );
+            continue;
+        }
+        if entry.is_directory() {
+            remove_directory_contents(image, layout, entry.first_cluster, 1)?;
+        }
+        free_chain(image, layout, entry.first_cluster)?;
+        mark_deleted(image, &entry)?;
+    }
+    Ok(())
+}
+
+fn remove_directory_contents(
+    image: &mut [u8],
+    layout: &Fat12Layout,
+    first_cluster: u16,
     depth: usize,
 ) -> Result<()> {
     ensure!(
         depth <= MAX_FAT_DIRECTORY_DEPTH,
         "FAT12 directory nesting exceeds {MAX_FAT_DIRECTORY_DEPTH} levels"
     );
-    let mut entries = Vec::new();
-    for entry in directory.iter() {
-        let entry = entry.context("enumerate FAT12 directory")?;
-        entries.push((short_file_name(&entry)?, entry.is_dir()));
-    }
-    for (name, is_directory) in entries {
-        if matches!(name.as_str(), "." | "..") {
+    let records = scan_directory(
+        image,
+        directory_entry_offsets(image, layout, first_cluster)?,
+    )?;
+    for entry in records {
+        if entry.is_volume_label() || entry.is_dot_entry() {
             continue;
         }
-        if is_directory {
-            let child = directory
-                .open_dir(&name)
-                .with_context(|| format!("open FAT12 directory {name}"))?;
-            let child_depth = depth
-                .checked_add(1)
-                .context("FAT12 directory depth overflow")?;
-            remove_directory_contents(&child, child_depth)?;
-            drop(child);
+        if entry.is_directory() {
+            remove_directory_contents(
+                image,
+                layout,
+                entry.first_cluster,
+                depth.checked_add(1).context("directory depth overflow")?,
+            )?;
         }
-        directory
-            .remove(&name)
-            .with_context(|| format!("remove FAT12 entry {name}"))?;
+        free_chain(image, layout, entry.first_cluster)?;
+        mark_deleted(image, &entry)?;
     }
     Ok(())
 }
 
-fn write_root_file<T: fatfs::ReadWriteSeek>(
-    root: &fatfs::Dir<'_, T>,
-    name: &str,
-    bytes: &[u8],
-) -> Result<()> {
-    let mut file = root
-        .create_file(name)
-        .with_context(|| format!("create FAT12 file {name}"))?;
-    file.truncate()
-        .with_context(|| format!("truncate FAT12 file {name}"))?;
-    file.write_all(bytes)
-        .with_context(|| format!("write FAT12 file {name}"))?;
+fn mark_deleted(image: &mut [u8], entry: &DirectoryRecord) -> Result<()> {
+    for offset in entry
+        .long_name_offsets
+        .iter()
+        .copied()
+        .chain(std::iter::once(entry.offset))
+    {
+        *image
+            .get_mut(offset)
+            .context("FAT12 directory deletion lies outside image")? = 0xe5;
+    }
     Ok(())
 }
 
-fn read_root_file<T: fatfs::ReadWriteSeek>(
-    root: &fatfs::Dir<'_, T>,
-    name: &str,
-    maximum_size: usize,
-) -> Result<Vec<u8>> {
-    let mut file = root
-        .open_file(name)
-        .with_context(|| format!("required FAT12 root file is missing: {name}"))?;
-    let announced_size = file
-        .seek(SeekFrom::End(0))
-        .with_context(|| format!("read FAT12 file size {name}"))?;
-    ensure!(
-        announced_size <= maximum_size as u64,
-        "FAT12 file {name} is too large: {announced_size} bytes exceeds {maximum_size}"
-    );
-    file.seek(SeekFrom::Start(0))
-        .with_context(|| format!("rewind FAT12 file {name}"))?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(announced_size as usize)
-        .with_context(|| format!("reserve FAT12 file {name} buffer"))?;
-    let read_limit = u64::try_from(maximum_size)
-        .context("FAT12 file size limit does not fit reader")?
-        .checked_add(1)
-        .context("FAT12 file read limit overflow")?;
-    (&mut file)
-        .take(read_limit)
-        .read_to_end(&mut bytes)
-        .with_context(|| format!("read FAT12 file {name}"))?;
-    ensure!(
-        bytes.len() as u64 == announced_size,
-        "FAT12 file {name} announced {announced_size} bytes but yielded {}",
-        bytes.len()
-    );
-    Ok(bytes)
+fn free_chain(image: &mut [u8], layout: &Fat12Layout, first_cluster: u16) -> Result<()> {
+    for cluster in collect_chain_to_end(image, layout, first_cluster)? {
+        set_fat_value(image, layout, cluster, 0)?;
+    }
+    Ok(())
 }
 
-fn verify_root_file<T: fatfs::ReadWriteSeek>(
-    root: &fatfs::Dir<'_, T>,
-    expected: &ExactFile,
+fn write_root_file(
+    image: &mut [u8],
+    layout: &Fat12Layout,
+    raw_name: [u8; 11],
+    bytes: &[u8],
+    allocation_hint: &mut u16,
 ) -> Result<()> {
-    let bytes = read_root_file(root, &expected.name, expected.size)?;
+    let records = scan_directory(image, root_entry_offsets(layout))?;
+    ensure!(
+        records
+            .iter()
+            .filter(|entry| !entry.is_volume_label())
+            .all(|entry| entry.raw_name != raw_name),
+        "FAT12 output name already exists: {}",
+        raw_name_label(&raw_name)
+    );
+    let entry_offset = find_free_root_entry(image, layout)?;
+    let cluster_count = bytes.len().div_ceil(layout.cluster_size);
+    let mut clusters = Vec::with_capacity(cluster_count);
+    for _ in 0..cluster_count {
+        let cluster = allocate_cluster(image, layout, *allocation_hint)?;
+        if let Some(previous) = clusters.last().copied() {
+            set_fat_value(image, layout, previous, cluster)?;
+        }
+        clusters.push(cluster);
+        *allocation_hint = cluster.saturating_add(1);
+    }
+    for (index, cluster) in clusters.iter().copied().enumerate() {
+        let source_offset = index * layout.cluster_size;
+        let take = (bytes.len() - source_offset).min(layout.cluster_size);
+        let target_offset = layout.cluster_offset(cluster)?;
+        image
+            .get_mut(target_offset..target_offset + take)
+            .context("allocated FAT12 cluster lies outside image")?
+            .copy_from_slice(&bytes[source_offset..source_offset + take]);
+    }
+
+    let entry = image
+        .get_mut(entry_offset..entry_offset + DIRECTORY_ENTRY_BYTES)
+        .context("FAT12 root slot lies outside image")?;
+    entry.fill(0);
+    entry[..11].copy_from_slice(&raw_name);
+    let first_cluster = clusters.first().copied().unwrap_or(0);
+    entry[FIRST_CLUSTER_OFFSET..FIRST_CLUSTER_OFFSET + 2]
+        .copy_from_slice(&first_cluster.to_le_bytes());
+    let file_size = u32::try_from(bytes.len()).context("FAT12 file is larger than 4 GiB")?;
+    entry[FILE_SIZE_OFFSET..FILE_SIZE_OFFSET + 4].copy_from_slice(&file_size.to_le_bytes());
+    Ok(())
+}
+
+fn find_free_root_entry(image: &[u8], layout: &Fat12Layout) -> Result<usize> {
+    root_entry_offsets(layout)
+        .into_iter()
+        .find(|offset| matches!(image.get(*offset), Some(0x00 | 0xe5)))
+        .context("FAT12 root directory has no free entry")
+}
+
+fn allocate_cluster(image: &mut [u8], layout: &Fat12Layout, hint: u16) -> Result<u16> {
+    let start = hint.clamp(2, layout.maximum_cluster);
+    let candidates = (start..=layout.maximum_cluster).chain(2..start);
+    for cluster in candidates {
+        if fat_value(image, layout, cluster)? == 0 {
+            set_fat_value(image, layout, cluster, END_OF_CHAIN)?;
+            return Ok(cluster);
+        }
+    }
+    anyhow::bail!("FAT12 image has no free cluster")
+}
+
+fn fat_value(image: &[u8], layout: &Fat12Layout, cluster: u16) -> Result<u16> {
+    let relative = usize::from(cluster)
+        .checked_add(usize::from(cluster) / 2)
+        .context("FAT12 entry offset overflow")?;
+    ensure!(
+        relative + 2 <= layout.fat_size,
+        "FAT12 entry {cluster} lies outside the table"
+    );
+    let offset = layout.fat_offsets[0] + relative;
+    let packed = u16::from_le_bytes(
+        image
+            .get(offset..offset + 2)
+            .context("FAT12 entry lies outside image")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("truncated FAT12 entry"))?,
+    );
+    Ok(if cluster.is_multiple_of(2) {
+        packed & 0x0fff
+    } else {
+        packed >> 4
+    })
+}
+
+fn set_fat_value(image: &mut [u8], layout: &Fat12Layout, cluster: u16, value: u16) -> Result<()> {
+    ensure!(value <= 0x0fff, "FAT12 value exceeds 12 bits");
+    let relative = usize::from(cluster)
+        .checked_add(usize::from(cluster) / 2)
+        .context("FAT12 entry offset overflow")?;
+    ensure!(
+        relative + 2 <= layout.fat_size,
+        "FAT12 entry {cluster} lies outside the table"
+    );
+    for fat_offset in &layout.fat_offsets {
+        let offset = *fat_offset + relative;
+        let existing = u16::from_le_bytes(
+            image
+                .get(offset..offset + 2)
+                .context("FAT12 entry lies outside image")?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("truncated FAT12 entry"))?,
+        );
+        let updated = if cluster.is_multiple_of(2) {
+            (existing & 0xf000) | value
+        } else {
+            (existing & 0x000f) | (value << 4)
+        };
+        image
+            .get_mut(offset..offset + 2)
+            .context("FAT12 entry lies outside image")?
+            .copy_from_slice(&updated.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn verify_exact_file(image: &[u8], layout: &Fat12Layout, expected: &ExactFile) -> Result<()> {
+    let raw_name = expected.name.raw_bytes("retained file")?;
+    let records = scan_directory(image, root_entry_offsets(layout))?;
+    let entry = require_unique_file(&records, &raw_name)?;
+    let bytes = read_file(image, layout, entry, expected.size)?;
     ensure!(
         bytes.len() == expected.size,
         "{} size mismatch: expected {}, got {}",
@@ -270,15 +696,15 @@ fn verify_root_file<T: fatfs::ReadWriteSeek>(
         expected.size,
         bytes.len()
     );
-    require_sha256(&bytes, &expected.sha256, &expected.name)
+    require_sha256(&bytes, &expected.sha256, &expected.name.to_string())
 }
 
 fn verify_image(
     image: &[u8],
     source_profile: &SourceImage,
     retained_files: &[ExactFile],
-    placed_file_names: &[String],
-    placed_files: &BTreeMap<String, Vec<u8>>,
+    placed_files: &[(String, FatShortName)],
+    placed_file_bytes: &BTreeMap<String, Vec<u8>>,
 ) -> Result<()> {
     ensure!(
         image.len() == source_profile.size,
@@ -286,75 +712,62 @@ fn verify_image(
         source_profile.size,
         image.len()
     );
-    require_geometry(image, &source_profile.geometry)?;
-    verify_fat_mirrors(image, &source_profile.geometry)?;
-    let filesystem = FileSystem::new(
-        Cursor::new(mount_copy(image, source_profile.mount_policy)?),
-        FsOptions::new(),
-    )
-    .context("remount assembled FAT12 image")?;
-    let root = filesystem.root_dir();
+    require_fat12_structure(image, &source_profile.geometry, source_profile.mount_policy)?;
+    let layout = Fat12Layout::new(&source_profile.geometry, image.len())?;
+    let records = scan_directory(image, root_entry_offsets(&layout))?;
     let mut actual_names = BTreeSet::new();
-    for entry in root.iter() {
-        let entry = entry.context("enumerate assembled FAT12 root")?;
-        let name = short_file_name(&entry)?;
+    for entry in &records {
+        if entry.is_volume_label() {
+            continue;
+        }
         ensure!(
-            !entry.is_dir(),
-            "assembled root contains an unexpected directory: {name}"
+            !entry.is_directory(),
+            "assembled root contains an unexpected directory: {}",
+            raw_name_label(&entry.raw_name)
         );
-        actual_names.insert(name);
+        ensure!(
+            actual_names.insert(entry.raw_name),
+            "assembled root contains a duplicate file: {}",
+            raw_name_label(&entry.raw_name)
+        );
     }
-    let expected_names: BTreeSet<_> = retained_files
+    let expected_names = retained_files
         .iter()
-        .map(|file| file.name.clone())
-        .chain(placed_file_names.iter().cloned())
-        .collect();
+        .map(|file| file.name.raw_bytes("retained file"))
+        .chain(
+            placed_files
+                .iter()
+                .map(|(_, name)| name.raw_bytes("placed file name")),
+        )
+        .collect::<Result<BTreeSet<_>>>()?;
     ensure!(
         actual_names == expected_names,
-        "assembled root file set differs: expected {expected_names:?}, got {actual_names:?}"
+        "assembled root file set differs: expected {}, got {}",
+        raw_name_set_label(&expected_names),
+        raw_name_set_label(&actual_names)
     );
     for file in retained_files {
-        verify_root_file(&root, file)?;
+        verify_exact_file(image, &layout, file)?;
     }
-    for name in placed_file_names {
-        let expected = placed_files
-            .get(name)
-            .with_context(|| format!("resolved file set is missing {name}"))?;
-        let actual = read_root_file(&root, name, expected.len())?;
-        ensure!(actual == *expected, "assembled file differs: {name}");
+    for (patch_key, name) in placed_files {
+        let expected = placed_file_bytes
+            .get(patch_key)
+            .with_context(|| format!("resolved file set is missing {patch_key}"))?;
+        let raw_name = name.raw_bytes("placed file name")?;
+        let entry = require_unique_file(&records, &raw_name)?;
+        let actual = read_file(image, &layout, entry, expected.len())?;
+        ensure!(actual == *expected, "assembled file differs: {patch_key}");
     }
     Ok(())
 }
 
-fn short_file_name<T: ReadWriteSeek>(entry: &DirEntry<'_, T>) -> Result<String> {
-    let bytes = entry.short_file_name_as_bytes();
-    ensure!(
-        bytes.is_ascii(),
-        "FAT12 short name contains a non-ASCII OEM byte: {bytes:?}"
-    );
-    Ok(std::str::from_utf8(bytes)
-        .context("FAT12 short name is not ASCII")?
-        .to_ascii_uppercase())
-}
-
-fn verify_fat_mirrors(image: &[u8], geometry: &Fat12Geometry) -> Result<()> {
-    if geometry.fat_count == 1 {
-        return Ok(());
-    }
-    let bytes_per_sector = usize::from(geometry.bytes_per_sector);
-    let fat_size = bytes_per_sector
-        .checked_mul(usize::from(geometry.sectors_per_fat))
-        .context("FAT byte size overflow")?;
-    let first_offset = bytes_per_sector
-        .checked_mul(usize::from(geometry.reserved_sectors))
-        .context("FAT offset overflow")?;
+fn verify_fat_mirrors(image: &[u8], layout: &Fat12Layout) -> Result<()> {
     let first = image
-        .get(first_offset..first_offset + fat_size)
+        .get(layout.fat_offsets[0]..layout.fat_offsets[0] + layout.fat_size)
         .context("first FAT lies outside image")?;
-    for index in 1..usize::from(geometry.fat_count) {
-        let offset = first_offset + index * fat_size;
+    for (index, offset) in layout.fat_offsets.iter().enumerate().skip(1) {
         let mirror = image
-            .get(offset..offset + fat_size)
+            .get(*offset..*offset + layout.fat_size)
             .context("FAT mirror lies outside image")?;
         ensure!(
             mirror == first,
@@ -364,10 +777,16 @@ fn verify_fat_mirrors(image: &[u8], geometry: &Fat12Geometry) -> Result<()> {
     Ok(())
 }
 
-fn reserved_region_len(geometry: &Fat12Geometry) -> Result<usize> {
-    usize::from(geometry.bytes_per_sector)
-        .checked_mul(usize::from(geometry.reserved_sectors))
-        .context("reserved FAT12 region size overflow")
+fn raw_name_label(name: &[u8; 11]) -> String {
+    name.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn raw_name_set_label(names: &BTreeSet<[u8; 11]>) -> String {
+    names
+        .iter()
+        .map(raw_name_label)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(test)]

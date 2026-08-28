@@ -64,14 +64,18 @@ pub fn inspect_patch_package(package: &[u8]) -> Result<PatchPackage> {
     )?;
     let recipe_json = String::from_utf8(recipe_bytes).context("recipe.json is not UTF-8")?;
     let recipe = parse_recipe(&recipe_json).context("parse recipe.json from patch ZIP")?;
+    let format = recipe.package_format()?;
 
     let expected_entries = recipe
         .assembly
         .placed_files
         .iter()
         .filter(|file| matches!(file.transform, FileTransform::Bps { .. }))
-        .map(|file| (file.name.clone(), patch_entry_name(&file.name)))
-        .collect::<BTreeMap<_, _>>();
+        .map(|file| {
+            let patch_key = file.effective_patch_key(format)?.to_owned();
+            Ok((patch_key.clone(), patch_entry_name(&patch_key)))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     require_patch_entries(&names, &expected_entries)?;
 
     let mut extracted_bytes = 0usize;
@@ -80,8 +84,9 @@ pub fn inspect_patch_package(package: &[u8]) -> Result<PatchPackage> {
         if !matches!(file.transform, FileTransform::Bps { .. }) {
             continue;
         }
+        let patch_key = file.effective_patch_key(format)?;
         let entry_name = expected_entries
-            .get(&file.name)
+            .get(patch_key)
             .expect("entry names were derived from placed files");
         let patch = read_entry(&mut archive, entry_name, MAX_BPS_BYTES as u64)?;
         extracted_bytes = extracted_bytes
@@ -91,9 +96,9 @@ pub fn inspect_patch_package(package: &[u8]) -> Result<PatchPackage> {
             extracted_bytes <= MAX_BPS_BYTES,
             "BPS payloads expand to {extracted_bytes} bytes, exceeding {MAX_BPS_BYTES}"
         );
-        inspect_file_patch(&recipe.id, file, &patch)
+        inspect_file_patch(&recipe, file, &patch)
             .with_context(|| format!("validate {entry_name}"))?;
-        patches.insert(file.name.clone(), patch);
+        patches.insert(patch_key.to_owned(), patch);
     }
 
     Ok(PatchPackage {
@@ -108,8 +113,8 @@ pub fn apply_patch_package(source: &[u8], package: &[u8]) -> Result<Vec<u8>> {
     apply_package_contents(&contents.recipe, &contents.patches, source)
 }
 
-pub fn patch_entry_name(output_name: &str) -> String {
-    format!("{PATCH_DIRECTORY}{output_name}.bps")
+pub fn patch_entry_name(patch_key: &str) -> String {
+    format!("{PATCH_DIRECTORY}{patch_key}.bps")
 }
 
 fn write_patch_package(recipe_json: &[u8], patches: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {

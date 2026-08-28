@@ -45,7 +45,8 @@ fn run() -> Result<()> {
             println!("target_bytes={}", contents.recipe.target.size);
             println!("file_patches={}", contents.patches.len());
             for file in &contents.recipe.assembly.placed_files {
-                let Some(patch) = contents.patches.get(&file.name) else {
+                let patch_key = contents.recipe.patch_key_for(file)?;
+                let Some(patch) = contents.patches.get(patch_key) else {
                     continue;
                 };
                 let statistics = inspect_patch_statistics(
@@ -58,7 +59,8 @@ fn run() -> Result<()> {
                         1_000_000,
                     ),
                 )?;
-                println!("file={}", file.name);
+                println!("file={patch_key}");
+                println!("  target_sfn={}", file.name);
                 println!("  bps_bytes={}", patch.len());
                 println!("  actions={}", statistics.action_count);
                 println!("  source_read_bytes={}", statistics.source_read_bytes);

@@ -4,10 +4,35 @@ use std::fmt;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::fat_name::{FatShortName, LhaMemberName};
 use crate::hash::{EMPTY_SHA256, validate_sha256};
 use crate::limits::{MAX_HDM_BYTES, MAX_RECIPE_BYTES};
 
-pub const PACKAGE_FORMAT: &str = "retrogame-patcher-pc98-fat12-file-bps";
+pub const LEGACY_PACKAGE_FORMAT: &str = "retrogame-patcher-pc98-fat12-file-bps";
+pub const PACKAGE_FORMAT: &str = "retrogame-patcher-pc98-fat12-raw-sfn-file-bps";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackageFormat {
+    LegacyAscii,
+    RawShortName,
+}
+
+impl PackageFormat {
+    pub fn identifier(self) -> &'static str {
+        match self {
+            Self::LegacyAscii => LEGACY_PACKAGE_FORMAT,
+            Self::RawShortName => PACKAGE_FORMAT,
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            LEGACY_PACKAGE_FORMAT => Ok(Self::LegacyAscii),
+            PACKAGE_FORMAT => Ok(Self::RawShortName),
+            _ => Err(UnsupportedPackageFormat.into()),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct UnsupportedPackageFormat;
@@ -16,7 +41,7 @@ impl fmt::Display for UnsupportedPackageFormat {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "unsupported patch package format; expected {PACKAGE_FORMAT}"
+            "unsupported patch package format; expected {LEGACY_PACKAGE_FORMAT} or {PACKAGE_FORMAT}"
         )
     }
 }
@@ -26,6 +51,8 @@ impl std::error::Error for UnsupportedPackageFormat {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatchPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
     pub id: String,
     pub title: String,
     pub output_filename: String,
@@ -93,7 +120,7 @@ pub struct AssemblyRecipe {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExactFile {
-    pub name: String,
+    pub name: FatShortName,
     pub size: usize,
     pub sha256: String,
 }
@@ -101,7 +128,9 @@ pub struct ExactFile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlannedFile {
-    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_key: Option<String>,
+    pub name: FatShortName,
     pub source: FileSource,
     pub source_size: usize,
     pub source_sha256: String,
@@ -118,7 +147,9 @@ pub enum PlannedTransform {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlacedFile {
-    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_key: Option<String>,
+    pub name: FatShortName,
     pub source: FileSource,
     pub source_size: usize,
     pub source_sha256: String,
@@ -131,6 +162,16 @@ impl PlacedFile {
             FileTransform::Copy => self.source_size,
             FileTransform::Bps { target_size, .. } => target_size,
         }
+    }
+
+    pub(crate) fn effective_patch_key(&self, format: PackageFormat) -> Result<&str> {
+        effective_patch_key(self.patch_key.as_deref(), &self.name, format)
+    }
+}
+
+impl PlannedFile {
+    pub(crate) fn effective_patch_key(&self, format: PackageFormat) -> Result<&str> {
+        effective_patch_key(self.patch_key.as_deref(), &self.name, format)
     }
 }
 
@@ -147,8 +188,13 @@ pub enum FileTransform {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FileSource {
-    RootFile { name: String },
-    MzLhaMember { container: String, member: String },
+    RootFile {
+        name: FatShortName,
+    },
+    MzLhaMember {
+        container: FatShortName,
+        member: LhaMemberName,
+    },
     Empty,
 }
 
@@ -173,7 +219,7 @@ pub fn parse_recipe(json: &str) -> Result<PatchRecipe> {
         .as_object()
         .and_then(|object| object.get("format"))
         .and_then(serde_json::Value::as_str);
-    if format != Some(PACKAGE_FORMAT) {
+    if !matches!(format, Some(LEGACY_PACKAGE_FORMAT | PACKAGE_FORMAT)) {
         return Err(UnsupportedPackageFormat.into());
     }
     let recipe: PatchRecipe = serde_json::from_value(value).context("parse patch recipe JSON")?;
@@ -182,7 +228,14 @@ pub fn parse_recipe(json: &str) -> Result<PatchRecipe> {
 }
 
 impl PatchPlan {
+    pub(crate) fn package_format(&self) -> Result<PackageFormat> {
+        self.format
+            .as_deref()
+            .map_or(Ok(PackageFormat::LegacyAscii), PackageFormat::parse)
+    }
+
     pub fn validate(&self) -> Result<()> {
+        let format = self.package_format()?;
         validate_identity(&self.id, &self.title, &self.output_filename)?;
         validate_source_image(&self.source)?;
         validate_output_count(
@@ -191,7 +244,8 @@ impl PatchPlan {
             self.assembly.placed_files.len(),
         )?;
         let mut output_names =
-            validate_retained_files(&self.assembly.retained_files, self.source.size)?;
+            validate_retained_files(&self.assembly.retained_files, self.source.size, format)?;
+        let mut patch_keys = BTreeSet::new();
         for file in &self.assembly.placed_files {
             validate_placed_source(
                 &file.name,
@@ -199,14 +253,23 @@ impl PatchPlan {
                 file.source_size,
                 &file.source_sha256,
                 self.source.size,
+                format,
             )?;
+            let patch_key = file.effective_patch_key(format)?;
             ensure!(
-                output_names.insert(file.name.as_str()),
+                patch_keys.insert(patch_key),
+                "duplicate patch key: {patch_key}"
+            );
+            ensure!(
+                output_names.insert(file.name.raw_bytes("placed file name")?),
                 "duplicate output file name: {}",
                 file.name
             );
         }
-        require_nonempty_assembly(&output_names)?;
+        require_nonempty_assembly(
+            self.assembly.retained_files.len(),
+            self.assembly.placed_files.len(),
+        )?;
         let declared_bytes = self
             .assembly
             .retained_files
@@ -223,11 +286,16 @@ impl PatchPlan {
 }
 
 impl PatchRecipe {
+    pub(crate) fn package_format(&self) -> Result<PackageFormat> {
+        PackageFormat::parse(&self.format)
+    }
+
+    pub fn patch_key_for<'a>(&self, file: &'a PlacedFile) -> Result<&'a str> {
+        file.effective_patch_key(self.package_format()?)
+    }
+
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.format == PACKAGE_FORMAT,
-            "recipe format must be {PACKAGE_FORMAT}"
-        );
+        let format = self.package_format()?;
         validate_identity(&self.id, &self.title, &self.output_filename)?;
         validate_source_image(&self.source)?;
         ensure!(
@@ -241,7 +309,8 @@ impl PatchRecipe {
             self.assembly.placed_files.len(),
         )?;
         let mut output_names =
-            validate_retained_files(&self.assembly.retained_files, self.source.size)?;
+            validate_retained_files(&self.assembly.retained_files, self.source.size, format)?;
+        let mut patch_keys = BTreeSet::new();
         for file in &self.assembly.placed_files {
             validate_placed_source(
                 &file.name,
@@ -249,7 +318,13 @@ impl PatchRecipe {
                 file.source_size,
                 &file.source_sha256,
                 self.source.size,
+                format,
             )?;
+            let patch_key = file.effective_patch_key(format)?;
+            ensure!(
+                patch_keys.insert(patch_key),
+                "duplicate patch key: {patch_key}"
+            );
             match &file.transform {
                 FileTransform::Copy => {}
                 FileTransform::Bps {
@@ -265,12 +340,15 @@ impl PatchRecipe {
                 }
             }
             ensure!(
-                output_names.insert(file.name.as_str()),
+                output_names.insert(file.name.raw_bytes("placed file name")?),
                 "duplicate output file name: {}",
                 file.name
             );
         }
-        require_nonempty_assembly(&output_names)?;
+        require_nonempty_assembly(
+            self.assembly.retained_files.len(),
+            self.assembly.placed_files.len(),
+        )?;
         let declared_bytes = self
             .assembly
             .retained_files
@@ -287,7 +365,7 @@ impl PatchRecipe {
 }
 
 impl Fat12Geometry {
-    fn validate(&self, image_size: usize) -> Result<()> {
+    pub(crate) fn validate(&self, image_size: usize) -> Result<()> {
         ensure!(
             self.bytes_per_sector.is_power_of_two() && self.bytes_per_sector >= 512,
             "FAT12 bytes per sector must be a power of two at least 512"
@@ -393,10 +471,11 @@ fn validate_output_count(source: &SourceImage, retained: usize, placed: usize) -
 fn validate_retained_files(
     retained_files: &[ExactFile],
     image_size: usize,
-) -> Result<BTreeSet<&str>> {
+    format: PackageFormat,
+) -> Result<BTreeSet<[u8; 11]>> {
     let mut names = BTreeSet::new();
     for file in retained_files {
-        validate_dos_name(&file.name, "retained file")?;
+        validate_fat_name(&file.name, "retained file", format)?;
         validate_sha256(&file.sha256, &format!("retained file {}", file.name))?;
         ensure!(
             file.size <= image_size,
@@ -404,7 +483,7 @@ fn validate_retained_files(
             file.name
         );
         ensure!(
-            names.insert(file.name.as_str()),
+            names.insert(file.name.raw_bytes("retained file")?),
             "duplicate output file name: {}",
             file.name
         );
@@ -413,23 +492,29 @@ fn validate_retained_files(
 }
 
 fn validate_placed_source(
-    output_name: &str,
+    output_name: &FatShortName,
     source: &FileSource,
     source_size: usize,
     source_sha256: &str,
     image_size: usize,
+    format: PackageFormat,
 ) -> Result<()> {
-    validate_dos_name(output_name, "placed file name")?;
+    validate_fat_name(output_name, "placed file name", format)?;
     validate_sha256(source_sha256, &format!("source file {output_name}"))?;
     ensure!(
         source_size <= image_size,
         "source file {output_name} is larger than the source HDM"
     );
     match source {
-        FileSource::RootFile { name } => validate_dos_name(name, "root source file"),
+        FileSource::RootFile { name } => validate_fat_name(name, "root source file", format),
         FileSource::MzLhaMember { container, member } => {
-            validate_dos_name(container, "LHA container")?;
-            validate_dos_name(member, "LHA member")
+            validate_fat_name(container, "LHA container", format)?;
+            member.validate("LHA member")?;
+            ensure!(
+                format == PackageFormat::RawShortName || matches!(member, LhaMemberName::Ascii(_)),
+                "legacy package format requires an ASCII LHA member name"
+            );
+            Ok(())
         }
         FileSource::Empty => {
             ensure!(
@@ -459,40 +544,53 @@ fn validate_declared_file_bytes(
     Ok(())
 }
 
-fn require_nonempty_assembly(names: &BTreeSet<&str>) -> Result<()> {
-    ensure!(!names.is_empty(), "assembly file set cannot be empty");
+fn require_nonempty_assembly(retained: usize, placed: usize) -> Result<()> {
+    ensure!(
+        retained > 0 || placed > 0,
+        "assembly file set cannot be empty"
+    );
     Ok(())
 }
 
-fn validate_dos_name(name: &str, label: &str) -> Result<()> {
+fn validate_fat_name(name: &FatShortName, label: &str, format: PackageFormat) -> Result<()> {
+    name.validate(label)?;
     ensure!(
-        !name.is_empty() && name == name.to_ascii_uppercase(),
-        "{label} must be an uppercase DOS 8.3 name: {name:?}"
+        format == PackageFormat::RawShortName || !name.is_raw(),
+        "legacy package format requires an ASCII DOS 8.3 {label}"
     );
-    ensure!(
-        name.bytes()
-            .all(|byte| byte.is_ascii_alphanumeric()
-                || matches!(byte, b'_' | b'$' | b'~' | b'-' | b'.')),
-        "{label} contains unsupported characters: {name:?}"
-    );
-    let mut parts = name.split('.');
-    let stem = parts.next().unwrap_or_default();
-    let extension = parts.next();
-    ensure!(
-        parts.next().is_none(),
-        "{label} is not a DOS 8.3 name: {name:?}"
-    );
-    ensure!(
-        (1..=8).contains(&stem.len()),
-        "{label} stem is not 1..=8 bytes: {name:?}"
-    );
-    if let Some(extension) = extension {
-        ensure!(
-            (1..=3).contains(&extension.len()),
-            "{label} extension is not 1..=3 bytes: {name:?}"
-        );
-    }
     Ok(())
+}
+
+fn effective_patch_key<'a>(
+    patch_key: Option<&'a str>,
+    name: &'a FatShortName,
+    format: PackageFormat,
+) -> Result<&'a str> {
+    let key = match format {
+        PackageFormat::LegacyAscii => {
+            ensure!(
+                patch_key.is_none(),
+                "legacy package format does not accept patch_key"
+            );
+            name.ascii_name()
+                .context("legacy package format requires an ASCII output name")?
+        }
+        PackageFormat::RawShortName => {
+            patch_key.context("raw-SFN package format requires patch_key for every placed file")?
+        }
+    };
+    ensure!(
+        (1..=64).contains(&key.len())
+            && key
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            && key
+                .bytes()
+                .all(|byte| { byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.') }),
+        "patch_key must be 1..=64 safe ASCII bytes and start with an alphanumeric character: {key:?}"
+    );
+    Ok(key)
 }
 
 #[cfg(test)]

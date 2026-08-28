@@ -1,0 +1,9 @@
+{
+  "format": "retrogame-patcher-pc98-fat12-raw-sfn-file-bps",
+  "package_bytes": 1303,
+  "package_sha256": "8976aa80d93d70d54e2af348a77a080ffdc1c04a090cae889c7ae5d7eea2637e",
+  "source_bytes": 32768,
+  "source_sha256": "4fba7c5fcdfb0083df6c19f804a5078c299d4839bc529f26fa8b0aee1063f15c",
+  "target_bytes": 32768,
+  "target_sha256": "2c2d250695e6be0586b48b3efb8e1d8ba73585b6c3c00695cb80538b0811ead5"
+}

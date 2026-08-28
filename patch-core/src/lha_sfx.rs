@@ -4,12 +4,13 @@ use std::io::{Cursor, Read};
 use anyhow::{Context, Result, ensure};
 use delharc::LhaDecodeReader;
 
+use crate::fat_name::LhaMemberName;
 use crate::limits::MAX_LHA_ENTRIES;
 
 pub(crate) fn extract_mz_lha_members(
     executable: &[u8],
-    expected_members: &BTreeMap<String, usize>,
-) -> Result<BTreeMap<String, Vec<u8>>> {
+    expected_members: &BTreeMap<LhaMemberName, usize>,
+) -> Result<BTreeMap<LhaMemberName, Vec<u8>>> {
     let archive_offset = mz_executable_length(executable)?;
     let archive = executable
         .get(archive_offset..)
@@ -32,10 +33,21 @@ pub(crate) fn extract_mz_lha_members(
             entry_count <= MAX_LHA_ENTRIES,
             "LHA archive has more than {MAX_LHA_ENTRIES} entries"
         );
-        let name = reader.header().parse_pathname_to_str().to_ascii_uppercase();
-        if let Some(&expected_size) = expected_members.get(&name) {
+        let parsed_name = reader.header().parse_pathname_to_str().to_ascii_uppercase();
+        let raw_name = reader.header().filename.as_ref();
+        let mut matching = Vec::new();
+        for (selector, expected_size) in expected_members {
+            if selector.matches(&parsed_name, raw_name)? {
+                matching.push((selector, *expected_size));
+            }
+        }
+        ensure!(
+            matching.len() <= 1,
+            "one LHA member matches more than one declared selector: {parsed_name}"
+        );
+        if let Some((name, expected_size)) = matching.pop() {
             ensure!(
-                !files.contains_key(&name),
+                !files.contains_key(name),
                 "duplicate required LHA member name: {name}"
             );
             ensure!(
@@ -69,7 +81,7 @@ pub(crate) fn extract_mz_lha_members(
             reader
                 .crc_check()
                 .map_err(|error| anyhow::anyhow!("LHA CRC check failed for {name}: {error}"))?;
-            files.insert(name, bytes);
+            files.insert(name.clone(), bytes);
             if files.len() == expected_members.len() {
                 return Ok(files);
             }

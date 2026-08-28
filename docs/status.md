@@ -4,10 +4,11 @@
 
 ## 확인됨
 
-- Rust 단위 테스트 41개와 공개 네이티브 적합성 테스트 1개가 통과했습니다. 사용자 소유 원본이 필요한 통합 테스트 1개는 기본 실행에서 명시적으로 제외됩니다.
+- Rust 단위 테스트 50개와 공개 네이티브 적합성 테스트 2개가 통과했습니다. 사용자 소유 원본이 필요한 통합 테스트 1개는 기본 실행에서 명시적으로 제외됩니다.
 - 합성 FAT12 입력에서 기존 파일 BPS와 `empty` 입력 신규 파일 BPS를 함께 적용하고, SFN·FAT 체인·EOF 뒤 바이트를 포함한 목표 HDM을 재현했습니다.
-- 공개 벡터 생성기를 별도 임시 디렉터리에서 다시 실행해 `source.hdm`, `plan.json`, `package.zip`, `target.hdm`, `manifest.json`이 저장소의 고정본과 바이트 단위로 같음을 확인했습니다.
-- macOS 네이티브 코어와 새로 빌드한 WebAssembly가 같은 공개 벡터의 목표 SHA-256 `20b1ea38ef250f6719bad83fdef48a96793a5ac46fca4a4a17c734efceeb9d97`을 재현했습니다.
+- CP932 원시 이름을 가진 합성 FAT12 파일과 MZ 뒤 LHA 멤버를 호스트 문자열 변환 없이 선택하고, 안전한 패치 키의 BPS로 정확한 11바이트 SFN을 다시 기록했습니다.
+- 두 공개 벡터 생성기를 별도 임시 디렉터리에서 다시 실행해 `source.hdm`, `plan.json`, `package.zip`, `target.hdm`, `manifest.json`이 각 저장소 고정본과 바이트 단위로 같음을 확인했습니다.
+- macOS 네이티브 코어와 새로 빌드한 WebAssembly가 ASCII 호환 벡터의 목표 SHA-256 `20b1ea38ef250f6719bad83fdef48a96793a5ac46fca4a4a17c734efceeb9d97`과 원시 SFN 벡터의 목표 SHA-256 `2c2d250695e6be0586b48b3efb8e1d8ba73585b6c3c00695cb80538b0811ead5`를 재현했습니다.
 - 잘못된 구형·비ZIP 패키지는 웹 사용자에게 내부 JSON·ZIP 파서 상세를 노출하지 않고 패키지 오류로 반환하는 회귀 검사가 통과했습니다.
 - `wasm32-unknown-unknown` 릴리스 빌드, TypeScript 검사, ESLint, Vinext 정적 프로덕션 빌드와 S3 업로드용 `dist/site/` 조립이 성공했습니다.
 - 브라우저 코드는 사용자가 고른 패치 ZIP과 원본 HDM을 `arrayBuffer()`로 읽고 결과를 로컬 `Blob` 다운로드로 만들며, 업로드·작품 ZIP 자동 요청 경로가 없습니다.

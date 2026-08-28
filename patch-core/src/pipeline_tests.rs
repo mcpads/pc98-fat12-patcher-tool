@@ -69,13 +69,16 @@ fn complete_pipeline_creates_a_new_file_from_an_empty_bps_source() {
 
     assert_eq!(applied, created.target);
     assert!(created.patches.contains_key("KIKIKR.FNT"));
+    let font_name = crate::fat_name::FatShortName::ascii("KIKIKR.FNT")
+        .raw_bytes("font")
+        .unwrap();
     let files = crate::fat12::read_root_files(
         &applied,
         crate::recipe::MountPolicy::Standard,
-        &BTreeSet::from(["KIKIKR.FNT".to_owned()]),
+        &BTreeSet::from([font_name]),
     )
     .unwrap();
-    assert_eq!(files["KIKIKR.FNT"], generated_font);
+    assert_eq!(files[&font_name], generated_font);
 }
 
 #[test]

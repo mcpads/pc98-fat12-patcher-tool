@@ -2,7 +2,7 @@ use super::*;
 
 fn valid_recipe() -> PatchRecipe {
     PatchRecipe {
-        format: PACKAGE_FORMAT.to_owned(),
+        format: LEGACY_PACKAGE_FORMAT.to_owned(),
         id: "fixture-patch".to_owned(),
         title: "Fixture Patch".to_owned(),
         output_filename: "fixture-patched.hdm".to_owned(),
@@ -25,14 +25,15 @@ fn valid_recipe() -> PatchRecipe {
         },
         assembly: AssemblyRecipe {
             retained_files: vec![ExactFile {
-                name: "SYSTEM.SYS".to_owned(),
+                name: FatShortName::ascii("SYSTEM.SYS"),
                 size: 4,
                 sha256: "1".repeat(64),
             }],
             placed_files: vec![PlacedFile {
-                name: "GAME.COM".to_owned(),
+                patch_key: None,
+                name: FatShortName::ascii("GAME.COM"),
                 source: FileSource::RootFile {
-                    name: "INSTALL.BIN".to_owned(),
+                    name: FatShortName::ascii("INSTALL.BIN"),
                 },
                 source_size: 8,
                 source_sha256: "2".repeat(64),
@@ -52,6 +53,7 @@ fn valid_recipe() -> PatchRecipe {
 fn valid_plan() -> PatchPlan {
     let recipe = valid_recipe();
     PatchPlan {
+        format: None,
         id: recipe.id,
         title: recipe.title,
         output_filename: recipe.output_filename,
@@ -63,6 +65,7 @@ fn valid_plan() -> PatchPlan {
                 .placed_files
                 .into_iter()
                 .map(|file| PlannedFile {
+                    patch_key: file.patch_key,
                     name: file.name,
                     source: file.source,
                     source_size: file.source_size,
@@ -83,7 +86,7 @@ fn plan_and_recipe_accept_complete_exact_file_contracts() {
 #[test]
 fn recipe_rejects_duplicate_output_names() {
     let mut recipe = valid_recipe();
-    recipe.assembly.placed_files[0].name = "SYSTEM.SYS".to_owned();
+    recipe.assembly.placed_files[0].name = FatShortName::ascii("SYSTEM.SYS");
     let error = recipe.validate().unwrap_err().to_string();
     assert!(error.contains("duplicate output file name"));
 }
@@ -111,7 +114,7 @@ fn recipe_rejects_unknown_json_fields_and_another_format() {
 #[test]
 fn recipe_rejects_noncanonical_dos_names() {
     let mut recipe = valid_recipe();
-    recipe.assembly.placed_files[0].name = "game.com".to_owned();
+    recipe.assembly.placed_files[0].name = FatShortName::ascii("game.com");
     let error = recipe.validate().unwrap_err().to_string();
     assert!(error.contains("uppercase DOS 8.3"));
 }
@@ -196,4 +199,24 @@ fn recipe_rejects_more_output_file_bytes_than_the_disk_can_hold() {
     recipe.assembly.retained_files[0].size = recipe.source.size;
     let error = recipe.validate().unwrap_err().to_string();
     assert!(error.contains("bytes of root files but the source HDM is"));
+}
+
+#[test]
+fn raw_sfn_recipe_accepts_exact_fat_and_lha_name_bytes() {
+    let mut value = serde_json::to_value(valid_recipe()).unwrap();
+    value["format"] = "retrogame-patcher-pc98-fat12-raw-sfn-file-bps".into();
+    let placed = &mut value["assembly"]["placed_files"][0];
+    placed["patch_key"] = "DOCHO-DATA".into();
+    placed["name"] = serde_json::json!({
+        "raw_sfn_hex": "93b9919088d995b7444154"
+    });
+    placed["source"] = serde_json::json!({
+        "kind": "mz_lha_member",
+        "container": "INSTALL.EXE",
+        "member": {
+            "raw_name_hex": "93b9919088d995b72e444154"
+        }
+    });
+
+    parse_recipe(&value.to_string()).unwrap();
 }

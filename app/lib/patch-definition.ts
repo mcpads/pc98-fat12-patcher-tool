@@ -7,7 +7,10 @@ export type RecipeSummary = {
   targetSha256: string;
 };
 
-const PACKAGE_FORMAT = 'retrogame-patcher-pc98-fat12-file-bps';
+const PACKAGE_FORMATS = new Set([
+  'retrogame-patcher-pc98-fat12-file-bps',
+  'retrogame-patcher-pc98-fat12-raw-sfn-file-bps',
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -39,7 +42,7 @@ export function readRecipeSummary(recipeJson: string): RecipeSummary {
   if (!isRecord(parsed) || !isRecord(parsed.source) || !isRecord(parsed.target)) {
     throw new Error('레시피에 source와 target 정보가 없습니다.');
   }
-  if (parsed.format !== PACKAGE_FORMAT) {
+  if (typeof parsed.format !== 'string' || !PACKAGE_FORMATS.has(parsed.format)) {
     throw new Error('지원하지 않는 패치 ZIP 형식입니다.');
   }
   const sourceSize = parsed.source.size;

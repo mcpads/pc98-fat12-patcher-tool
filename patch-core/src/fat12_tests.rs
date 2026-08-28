@@ -1,8 +1,7 @@
-use std::collections::BTreeMap;
-
-use fatfs::{FileSystem, FsOptions};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
+use crate::fat_name::FatShortName;
 use crate::test_support::{direct_root_plan, fixture_image};
 
 #[test]
@@ -26,36 +25,30 @@ fn assembly_preserves_declared_files_and_replaces_the_rest_in_order() {
         payload,
     );
     let placed = BTreeMap::from([("GAME.COM".to_owned(), payload.to_vec())]);
-    let placed_names = vec!["GAME.COM".to_owned()];
+    let placements = vec![("GAME.COM".to_owned(), FatShortName::ascii("GAME.COM"))];
     let assembled = assemble_image(
         &source,
         &plan.source,
         &plan.assembly.retained_files,
-        &placed_names,
+        &placements,
         &placed,
     )
     .unwrap();
 
     assert_eq!(source.len(), assembled.len());
     assert_eq!(&source[..512], &assembled[..512]);
-    let filesystem = FileSystem::new(Cursor::new(assembled), FsOptions::new()).unwrap();
-    let root = filesystem.root_dir();
-    let names: BTreeSet<_> = root
-        .iter()
-        .map(|entry| short_file_name(&entry.unwrap()).unwrap())
-        .collect();
-    assert_eq!(
-        names,
-        BTreeSet::from(["GAME.COM".to_owned(), "SYSTEM.SYS".to_owned()])
-    );
-    assert_eq!(
-        read_root_file(&root, "SYSTEM.SYS", retained.len()).unwrap(),
-        retained
-    );
-    assert_eq!(
-        read_root_file(&root, "GAME.COM", payload.len()).unwrap(),
-        payload
-    );
+    let system_name = FatShortName::ascii("SYSTEM.SYS")
+        .raw_bytes("system")
+        .unwrap();
+    let game_name = FatShortName::ascii("GAME.COM").raw_bytes("game").unwrap();
+    let files = read_root_files(
+        &assembled,
+        MountPolicy::Standard,
+        &BTreeSet::from([system_name, game_name]),
+    )
+    .unwrap();
+    assert_eq!(files[&system_name], retained);
+    assert_eq!(files[&game_name], payload);
 }
 
 #[test]
@@ -85,7 +78,10 @@ fn canonical_assembly_follows_placed_order_and_preserves_cluster_tail_bytes() {
     );
     let first = vec![0x31; 600];
     let second = vec![0x42; 16];
-    let placed_names = vec!["ZNEW.BIN".to_owned(), "ANEW.BIN".to_owned()];
+    let placements = vec![
+        ("ZNEW.BIN".to_owned(), FatShortName::ascii("ZNEW.BIN")),
+        ("ANEW.BIN".to_owned(), FatShortName::ascii("ANEW.BIN")),
+    ];
     let placed = BTreeMap::from([
         ("ANEW.BIN".to_owned(), second),
         ("ZNEW.BIN".to_owned(), first.clone()),
@@ -95,7 +91,7 @@ fn canonical_assembly_follows_placed_order_and_preserves_cluster_tail_bytes() {
         &source,
         &plan.source,
         &plan.assembly.retained_files,
-        &placed_names,
+        &placements,
         &placed,
     )
     .unwrap();
@@ -166,21 +162,51 @@ fn canonical_assembly_follows_placed_order_and_preserves_cluster_tail_bytes() {
 }
 
 #[test]
-fn pc98_dos3_mount_copy_does_not_change_the_caller_source() {
-    let mut source = vec![0xe5; 1_024];
+fn pc98_dos3_reads_do_not_change_the_caller_source() {
+    let source = fixture_image(&[("ONE.TXT", b"one")], false);
     let original = source.clone();
-    let copy = mount_copy(&source, MountPolicy::Pc98Dos3).unwrap();
+    let name = FatShortName::ascii("ONE.TXT").raw_bytes("fixture").unwrap();
+    let files = read_root_files(&source, MountPolicy::Pc98Dos3, &BTreeSet::from([name])).unwrap();
     assert_eq!(source, original);
-    assert_eq!(
-        &copy[HIDDEN_SECTORS_OFFSET..TOTAL_SECTORS_32_OFFSET + 4],
-        &[0; 8]
+    assert_eq!(files[&name], b"one");
+}
+
+#[test]
+fn assembly_writes_and_reads_a_cp932_raw_sfn_without_a_host_filename() {
+    let retained = b"system";
+    let payload = b"Japanese data archive";
+    let source = fixture_image(&[("SYSTEM.SYS", retained), ("SOURCE.DAT", payload)], false);
+    let plan = direct_root_plan(
+        &source,
+        "SYSTEM.SYS",
+        retained,
+        "SOURCE.DAT",
+        "TARGET.DAT",
+        payload,
     );
-    assert_eq!(
-        &copy[IBM_SIGNATURE_OFFSET..IBM_SIGNATURE_OFFSET + 2],
-        &[0x55, 0xaa]
-    );
-    source[0] = 0;
-    assert_ne!(source, original);
+    let raw_name = FatShortName::Raw {
+        raw_sfn_hex: "93b9919088d995b7444154".to_owned(),
+    };
+    let raw_bytes = raw_name.raw_bytes("Docho data").unwrap();
+    let placements = vec![("DOCHO-DATA".to_owned(), raw_name)];
+    let placed = BTreeMap::from([("DOCHO-DATA".to_owned(), payload.to_vec())]);
+
+    let assembled = assemble_image(
+        &source,
+        &plan.source,
+        &plan.assembly.retained_files,
+        &placements,
+        &placed,
+    )
+    .unwrap();
+    let files = read_root_files(
+        &assembled,
+        MountPolicy::Standard,
+        &BTreeSet::from([raw_bytes]),
+    )
+    .unwrap();
+
+    assert_eq!(files[&raw_bytes], payload);
 }
 
 #[test]

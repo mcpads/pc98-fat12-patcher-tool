@@ -1,0 +1,52 @@
+{
+  "assembly": {
+    "placed_files": [
+      {
+        "name": {
+          "raw_sfn_hex": "93b9919088d995b7444154"
+        },
+        "patch_key": "DOCHO-DATA",
+        "source": {
+          "container": "INSTALL.EXE",
+          "kind": "mz_lha_member",
+          "member": {
+            "raw_name_hex": "93b9919088d995b72e444154"
+          }
+        },
+        "source_sha256": "ddc821426ba897f5ea567317276fdd1ceef54c697603e9a5645201d9eda2993b",
+        "source_size": 700,
+        "transform": {
+          "kind": "bps"
+        }
+      }
+    ],
+    "retained_files": [
+      {
+        "name": "KEEP.SYS",
+        "sha256": "bbc5e661e106c6dcd8dc6dd186454c2fcba3c710fb4d8e71a60c93eaf077f073",
+        "size": 6
+      }
+    ]
+  },
+  "format": "retrogame-patcher-pc98-fat12-raw-sfn-file-bps",
+  "id": "canonical-fat12-raw-sfn-conformance",
+  "output_filename": "raw-sfn-conformance-target.hdm",
+  "source": {
+    "geometry": {
+      "bytes_per_sector": 512,
+      "fat_count": 2,
+      "heads": 2,
+      "media_descriptor": 240,
+      "reserved_sectors": 1,
+      "root_entries": 16,
+      "sectors_per_cluster": 1,
+      "sectors_per_fat": 1,
+      "sectors_per_track": 8,
+      "total_sectors": 64
+    },
+    "mount_policy": "standard",
+    "sha256": "4fba7c5fcdfb0083df6c19f804a5078c299d4839bc529f26fa8b0aee1063f15c",
+    "size": 32768
+  },
+  "title": "Canonical FAT12 raw SFN conformance fixture"
+}

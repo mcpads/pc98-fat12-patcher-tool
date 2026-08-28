@@ -3,6 +3,7 @@ use std::io::{Cursor, Write};
 
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions, format_volume};
 
+use crate::fat_name::FatShortName;
 use crate::fat12::assemble_image;
 use crate::hash::sha256_hex;
 use crate::recipe::{
@@ -68,6 +69,7 @@ pub(crate) fn direct_root_plan(
     input_bytes: &[u8],
 ) -> PatchPlan {
     PatchPlan {
+        format: None,
         id: "fixture-patch".to_owned(),
         title: "Fixture Patch".to_owned(),
         output_filename: "fixture-patched.hdm".to_owned(),
@@ -79,14 +81,15 @@ pub(crate) fn direct_root_plan(
         },
         assembly: PlannedAssemblyRecipe {
             retained_files: vec![ExactFile {
-                name: retained_name.to_owned(),
+                name: FatShortName::ascii(retained_name),
                 size: retained_bytes.len(),
                 sha256: sha256_hex(retained_bytes),
             }],
             placed_files: vec![PlannedFile {
-                name: output_name.to_owned(),
+                patch_key: None,
+                name: FatShortName::ascii(output_name),
                 source: FileSource::RootFile {
-                    name: input_name.to_owned(),
+                    name: FatShortName::ascii(input_name),
                 },
                 source_size: input_bytes.len(),
                 source_sha256: sha256_hex(input_bytes),
@@ -101,17 +104,23 @@ pub(crate) fn content_image(source: &[u8], plan: &PatchPlan, files: &[(&str, &[u
         .iter()
         .map(|(name, bytes)| ((*name).to_owned(), (*bytes).to_vec()))
         .collect::<BTreeMap<_, _>>();
-    let names = plan
+    let format = plan.package_format().unwrap();
+    let placements = plan
         .assembly
         .placed_files
         .iter()
-        .map(|file| file.name.clone())
+        .map(|file| {
+            (
+                file.effective_patch_key(format).unwrap().to_owned(),
+                file.name.clone(),
+            )
+        })
         .collect::<Vec<_>>();
     assemble_image(
         source,
         &plan.source,
         &plan.assembly.retained_files,
-        &names,
+        &placements,
         &placed,
     )
     .unwrap()

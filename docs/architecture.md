@@ -11,6 +11,7 @@ app/page.tsx
 
 patch-core/src/lib.rs
 ├─ recipe.rs                             제작 계획·배포 레시피·엄격 검증
+├─ fat_name.rs                           ASCII·원시 FAT/LHA 이름 계약
 ├─ limits.rs                             파서와 브라우저 자원 한계
 ├─ source_files.rs                       원본 논리 파일 선택
 ├─ lha_sfx.rs                            MZ 길이와 LHA 멤버 추출
@@ -56,4 +57,4 @@ ZIP의 무관한 항목은 압축 해제하지 않습니다. 어느 검사든 �
 
 구체적인 입력 계약과 책임 분리는 [패치 패키지 프로토콜](protocol.md)이 맡습니다.
 
-플랫폼과 빌드 시점에 따른 바이트 차이는 합성 입력·패치 ZIP·기대 HDM을 함께 고정한 [공개 적합성 벡터](../conformance/manifest.json)로 검사합니다. 네이티브와 WebAssembly는 같은 벡터를 소비하며 구현 내부 구조가 아니라 패키지와 결과 바이트의 일치를 판정합니다.
+플랫폼과 빌드 시점에 따른 바이트 차이는 합성 입력·패치 ZIP·기대 HDM을 함께 고정한 [ASCII 호환 벡터](../conformance/manifest.json)와 [원시 SFN 벡터](../conformance/raw-sfn/manifest.json)로 검사합니다. 네이티브와 WebAssembly는 같은 두 벡터를 소비하며 구현 내부 구조가 아니라 패키지와 결과 바이트의 일치를 판정합니다.

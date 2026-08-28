@@ -4,6 +4,7 @@ use zip::ZipArchive;
 
 use super::*;
 use crate::pipeline::create_package_contents;
+use crate::recipe::PACKAGE_FORMAT;
 use crate::test_support::{content_image, direct_root_plan, fixture_image};
 
 fn fixture_product(include_directory: bool) -> (Vec<u8>, crate::recipe::PatchPlan, Vec<u8>) {
@@ -46,6 +47,55 @@ fn package_contains_recipe_and_one_patch_per_changed_logical_file() {
         names,
         [patch_entry_name("GAME.COM"), RECIPE_ENTRY_NAME.to_owned()]
     );
+}
+
+#[test]
+fn raw_sfn_package_uses_a_safe_patch_key_and_writes_exact_name_bytes() {
+    let retained = b"system";
+    let payload = b"original game payload";
+    let localized = b"localized docho payload";
+    let source = fixture_image(&[("SYSTEM.SYS", retained), ("INSTALL.BIN", payload)], false);
+    let mut plan = direct_root_plan(
+        &source,
+        "SYSTEM.SYS",
+        retained,
+        "INSTALL.BIN",
+        "GAME.DAT",
+        payload,
+    );
+    let raw_name = crate::FatShortName::Raw {
+        raw_sfn_hex: "93b9919088d995b7444154".to_owned(),
+    };
+    plan.format = Some(PACKAGE_FORMAT.to_owned());
+    plan.assembly.placed_files[0].patch_key = Some("DOCHO-DATA".to_owned());
+    plan.assembly.placed_files[0].name = raw_name.clone();
+    let content = content_image(&source, &plan, &[("DOCHO-DATA", localized)]);
+    let plan_json = serde_json::to_string_pretty(&plan).unwrap();
+
+    let package = create_patch_package(&plan_json, &source, &content).unwrap();
+    let contents = inspect_patch_package(&package).unwrap();
+    let applied = apply_patch_package(&source, &package).unwrap();
+
+    assert_eq!(contents.recipe.format, PACKAGE_FORMAT);
+    assert_eq!(contents.recipe.assembly.placed_files[0].name, raw_name);
+    assert!(contents.patches.contains_key("DOCHO-DATA"));
+    let mut archive = ZipArchive::new(Cursor::new(package)).unwrap();
+    let mut names = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        [patch_entry_name("DOCHO-DATA"), RECIPE_ENTRY_NAME.to_owned()]
+    );
+    let requested = BTreeSet::from([contents.recipe.assembly.placed_files[0]
+        .name
+        .raw_bytes("test output name")
+        .unwrap()]);
+    let files =
+        crate::fat12::read_root_files(&applied, contents.recipe.source.mount_policy, &requested)
+            .unwrap();
+    assert_eq!(files.values().next().unwrap(), localized);
 }
 
 #[test]

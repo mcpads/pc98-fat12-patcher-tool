@@ -1,4 +1,5 @@
 mod fat12;
+mod fat_name;
 mod file_patch;
 mod hash;
 mod lha_sfx;
@@ -13,11 +14,14 @@ mod web_error;
 #[path = "test_support_tests.rs"]
 mod test_support;
 
+pub use fat_name::{FatShortName, LhaMemberName};
 pub use patch_package::{
     PATCH_DIRECTORY, PatchPackage, RECIPE_ENTRY_NAME, apply_patch_package, create_patch_package,
     inspect_patch_package, patch_entry_name,
 };
-pub use recipe::{PatchPlan, PatchRecipe, parse_plan, parse_recipe};
+pub use recipe::{
+    LEGACY_PACKAGE_FORMAT, PACKAGE_FORMAT, PatchPlan, PatchRecipe, parse_plan, parse_recipe,
+};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::fat_name::{FatShortName, LhaMemberName};
 use crate::test_support::{direct_root_plan, fixture_image};
 
 #[test]
@@ -53,8 +54,8 @@ fn invalid_mz_lha_container_is_rejected_as_an_archive() {
         b"member",
     );
     plan.assembly.placed_files[0].source = FileSource::MzLhaMember {
-        container: "INSTALL.EXE".to_owned(),
-        member: "GAME.COM".to_owned(),
+        container: FatShortName::ascii("INSTALL.EXE"),
+        member: LhaMemberName::ascii("GAME.COM"),
     };
     let error = resolve_plan_files(&source, &plan).unwrap_err().to_string();
     assert!(error.contains("not an MZ executable"));
@@ -77,11 +78,11 @@ fn plan_cannot_assign_two_sizes_to_the_same_lha_member() {
         payload,
     );
     plan.assembly.placed_files[0].source = FileSource::MzLhaMember {
-        container: "INSTALL.EXE".to_owned(),
-        member: "GAME.COM".to_owned(),
+        container: FatShortName::ascii("INSTALL.EXE"),
+        member: LhaMemberName::ascii("GAME.COM"),
     };
     let mut second = plan.assembly.placed_files[0].clone();
-    second.name = "GAME2.COM".to_owned();
+    second.name = FatShortName::ascii("GAME2.COM");
     second.source_size += 1;
     plan.assembly.placed_files.push(second);
 

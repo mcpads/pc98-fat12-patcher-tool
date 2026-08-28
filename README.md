@@ -8,8 +8,8 @@
 배포 ZIP
 ├─ recipe.json
 └─ patches/
-   ├─ GAME.COM.bps
-   └─ DATA.BIN.bps
+   ├─ GAME-COM.bps
+   └─ DATA-BIN.bps
 
 사용자 원본 HDM
   → 원본 크기·해시·FAT12 형상 검사
@@ -49,6 +49,8 @@ npm run build
 
 작성 입력인 `plan.json`은 원본 정체, 보존할 파일, 다시 놓을 파일과 각 파일의 `copy` 또는 `bps` 변환 방식을 선언합니다. `content.hdm`은 목표 논리 파일을 읽기 위한 제작자 로컬 입력일 뿐 배포물에 들어가지 않습니다.
 
+새 계획은 `format`에 `retrogame-patcher-pc98-fat12-raw-sfn-file-bps`를 쓰고 각 배치 파일에 안전한 `patch_key`를 둡니다. FAT 이름은 일반 ASCII 8.3 문자열 또는 정확한 디렉터리 이름 11바이트를 나타내는 `{ "raw_sfn_hex": "..." }`로 선언할 수 있습니다. MZ 뒤 LHA 멤버도 `{ "raw_name_hex": "..." }`로 원시 이름 바이트를 선택할 수 있습니다. 상세 스키마는 프로토콜 문서에 있습니다.
+
 ```sh
 cargo run --release --manifest-path patch-core/Cargo.toml \
   --bin pc98_patch_author -- create \
@@ -80,8 +82,9 @@ cargo run --release --manifest-path patch-core/Cargo.toml \
 
 - [패치 패키지 프로토콜](docs/protocol.md)
 - [공개 적합성 벡터](conformance/manifest.json)
+- [원시 SFN 공개 적합성 벡터](conformance/raw-sfn/manifest.json)
 - [구조와 모듈 경계](docs/architecture.md)
 - [현재 검증 상태](docs/status.md)
 - [S3와 CloudFront 정적 배포](docs/s3-cloudfront.md)
 
-원본·content·결과 HDM, 게임 파일, 저장 데이터와 내부 검수 자료는 저장소에 포함하지 않습니다. 현재 범위는 같은 크기의 raw FAT12 이미지, 루트 파일 재배치, 빈 입력에서 신규 파일 생성, MZ 실행 파일 뒤 LHA 멤버 추출과 파일별 BPS1 적용입니다.
+원본·content·결과 HDM, 게임 파일, 저장 데이터와 내부 검수 자료는 저장소에 포함하지 않습니다. 현재 범위는 같은 크기의 raw FAT12 이미지, ASCII 또는 원시 11바이트 SFN을 가진 루트 파일 재배치, 빈 입력에서 신규 파일 생성, MZ 실행 파일 뒤 ASCII 또는 원시 이름 LHA 멤버 추출과 파일별 BPS1 적용입니다.
