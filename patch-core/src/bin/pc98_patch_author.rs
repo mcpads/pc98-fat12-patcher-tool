@@ -4,9 +4,15 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use pc98_fat12_patcher_core::{apply_patch_package, create_patch_package, inspect_patch_package};
+use pc98_fat12_patcher_core::{
+    PatchArtifact, PatchPackage, apply_patch_package, create_patch_package, create_patch_set,
+    inspect_patch_artifact,
+};
 use retro_patch_utility::bps::{BpsLimits, inspect_patch_statistics};
 use tempfile::NamedTempFile;
+
+#[path = "pc98_patch_author/patch_set_plan.rs"]
+mod patch_set_plan;
 
 fn main() {
     if let Err(error) = run() {
@@ -29,6 +35,11 @@ fn run() -> Result<()> {
             let package = create_patch_package(&plan_json, &source, &content)?;
             write_new(Path::new(output), &package)
         }
+        ("create-set", [_, plan, output]) => {
+            let plan = patch_set_plan::load_patch_set_plan(Path::new(plan))?;
+            let patch_set = create_patch_set(&plan.id, &plan.title, plan.members)?;
+            write_new(Path::new(output), &patch_set)
+        }
         ("apply", [_, source, package, output]) => {
             let source = read_bytes(source, "source HDM")?;
             let package = read_bytes(package, "patch ZIP")?;
@@ -37,43 +48,85 @@ fn run() -> Result<()> {
         }
         ("inspect", [_, package]) => {
             let package = read_bytes(package, "patch ZIP")?;
-            let contents = inspect_patch_package(&package)?;
             println!("package_bytes={}", package.len());
-            println!("recipe_id={}", contents.recipe.id);
-            println!("output_filename={}", contents.recipe.output_filename);
-            println!("source_bytes={}", contents.recipe.source.size);
-            println!("target_bytes={}", contents.recipe.target.size);
-            println!("file_patches={}", contents.patches.len());
-            for file in &contents.recipe.assembly.placed_files {
-                let patch_key = contents.recipe.patch_key_for(file)?;
-                let Some(patch) = contents.patches.get(patch_key) else {
-                    continue;
-                };
-                let statistics = inspect_patch_statistics(
-                    patch,
-                    BpsLimits::new(
-                        patch.len(),
-                        file.source_size,
-                        file.target_size(),
-                        patch.len(),
-                        1_000_000,
-                    ),
-                )?;
-                println!("file={patch_key}");
-                println!("  target_sfn={}", file.name);
-                println!("  bps_bytes={}", patch.len());
-                println!("  actions={}", statistics.action_count);
-                println!("  source_read_bytes={}", statistics.source_read_bytes);
-                println!("  target_read_bytes={}", statistics.target_read_bytes);
-                println!("  source_copy_bytes={}", statistics.source_copy_bytes);
-                println!("  target_copy_bytes={}", statistics.target_copy_bytes);
+            match inspect_patch_artifact(&package)? {
+                PatchArtifact::Single(contents) => {
+                    println!("artifact_kind=single");
+                    print_package(&contents, "")?;
+                }
+                PatchArtifact::Set(contents) => {
+                    println!("artifact_kind=set");
+                    println!("set_id={}", contents.manifest.id);
+                    println!("members={}", contents.manifest.members.len());
+                    for member in &contents.manifest.members {
+                        println!("member={}", member.key);
+                        println!("  label={}", member.label);
+                        println!("  package_bytes={}", member.package_size);
+                        println!("  package_sha256={}", member.package_sha256);
+                        let nested = contents
+                            .inspected_packages
+                            .get(&member.key)
+                            .expect("inspected package keys match manifest keys");
+                        print_package(nested, "  ")?;
+                    }
+                }
             }
             Ok(())
         }
         _ => bail!(
-            "usage:\n  pc98-patch-author create <plan.json> <source.hdm> <content.hdm> <output.zip>\n  pc98-patch-author apply <source.hdm> <patch.zip> <output.hdm>\n  pc98-patch-author inspect <patch.zip>"
+            "usage:\n  pc98-patch-author create <plan.json> <source.hdm> <content.hdm> <output.zip>\n  pc98-patch-author create-set <set-plan.json> <output.zip>\n  pc98-patch-author apply <source.hdm> <single-patch.zip> <output.hdm>\n  pc98-patch-author inspect <patch.zip>"
         ),
     }
+}
+
+fn print_package(contents: &PatchPackage, indent: &str) -> Result<()> {
+    println!("{indent}recipe_id={}", contents.recipe.id);
+    println!(
+        "{indent}output_filename={}",
+        contents.recipe.output_filename
+    );
+    println!("{indent}source_bytes={}", contents.recipe.source.size);
+    println!("{indent}source_sha256={}", contents.recipe.source.sha256);
+    println!("{indent}target_bytes={}", contents.recipe.target.size);
+    println!("{indent}target_sha256={}", contents.recipe.target.sha256);
+    println!("{indent}file_patches={}", contents.patches.len());
+    for file in &contents.recipe.assembly.placed_files {
+        let patch_key = contents.recipe.patch_key_for(file)?;
+        let Some(patch) = contents.patches.get(patch_key) else {
+            continue;
+        };
+        let statistics = inspect_patch_statistics(
+            patch,
+            BpsLimits::new(
+                patch.len(),
+                file.source_size,
+                file.target_size(),
+                patch.len(),
+                1_000_000,
+            ),
+        )?;
+        println!("{indent}file={patch_key}");
+        println!("{indent}  target_sfn={}", file.name);
+        println!("{indent}  bps_bytes={}", patch.len());
+        println!("{indent}  actions={}", statistics.action_count);
+        println!(
+            "{indent}  source_read_bytes={}",
+            statistics.source_read_bytes
+        );
+        println!(
+            "{indent}  target_read_bytes={}",
+            statistics.target_read_bytes
+        );
+        println!(
+            "{indent}  source_copy_bytes={}",
+            statistics.source_copy_bytes
+        );
+        println!(
+            "{indent}  target_copy_bytes={}",
+            statistics.target_copy_bytes
+        );
+    }
+    Ok(())
 }
 
 fn read_text(path: &OsString, label: &str) -> Result<String> {

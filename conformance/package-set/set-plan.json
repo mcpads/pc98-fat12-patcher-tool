@@ -1,0 +1,16 @@
+{
+  "id": "public-mixed-package-set-fixture",
+  "title": "Public Mixed Package Set Fixture",
+  "members": [
+    {
+      "key": "ascii-disk",
+      "label": "ASCII 호환 디스크",
+      "package_path": "../package.zip"
+    },
+    {
+      "key": "raw-sfn-disk",
+      "label": "원시 SFN 디스크",
+      "package_path": "../raw-sfn/package.zip"
+    }
+  ]
+}

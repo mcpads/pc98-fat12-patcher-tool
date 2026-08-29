@@ -7,6 +7,7 @@ use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 
 use crate::file_patch::inspect_file_patch;
 use crate::limits::{MAX_BPS_BYTES, MAX_PATCH_PACKAGE_BYTES, MAX_RECIPE_BYTES, MAX_ZIP_ENTRIES};
+use crate::patch_set::PATCH_SET_ENTRY_NAME;
 use crate::pipeline::{apply_package_contents, create_package_contents};
 use crate::recipe::{FileTransform, PatchRecipe, parse_plan, parse_recipe};
 
@@ -56,6 +57,10 @@ pub fn inspect_patch_package(package: &[u8]) -> Result<PatchPackage> {
     );
     let names = collect_entry_names(&mut archive)?;
     require_single_entry(&names, RECIPE_ENTRY_NAME)?;
+    ensure!(
+        !names.contains_key(PATCH_SET_ENTRY_NAME),
+        "patch ZIP cannot contain both {RECIPE_ENTRY_NAME} and {PATCH_SET_ENTRY_NAME}"
+    );
 
     let recipe_bytes = read_entry(
         &mut archive,
@@ -145,7 +150,9 @@ fn write_patch_package(recipe_json: &[u8], patches: &BTreeMap<String, Vec<u8>>) 
     Ok(archive.finish().context("finish patch ZIP")?.into_inner())
 }
 
-fn collect_entry_names(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<BTreeMap<String, usize>> {
+pub(crate) fn collect_entry_names(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+) -> Result<BTreeMap<String, usize>> {
     let mut names = BTreeMap::new();
     for index in 0..archive.len() {
         let entry = archive
@@ -159,7 +166,7 @@ fn collect_entry_names(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<BTreeM
     Ok(names)
 }
 
-fn require_single_entry(names: &BTreeMap<String, usize>, name: &str) -> Result<()> {
+pub(crate) fn require_single_entry(names: &BTreeMap<String, usize>, name: &str) -> Result<()> {
     match names.get(name).copied().unwrap_or_default() {
         1 => Ok(()),
         0 => anyhow::bail!("patch ZIP is missing root entry {name}"),
@@ -187,7 +194,7 @@ fn require_patch_entries(
     Ok(())
 }
 
-fn read_entry(
+pub(crate) fn read_entry(
     archive: &mut ZipArchive<Cursor<&[u8]>>,
     name: &str,
     maximum_size: u64,

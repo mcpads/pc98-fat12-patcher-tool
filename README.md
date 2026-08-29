@@ -1,6 +1,6 @@
 # PC-98 FAT12 Patcher Tool
 
-사용자가 가진 원본 PC-98 FAT12 HDM에 파일별 BPS를 적용하고 결과 디스크를 브라우저 안에서 조립하는 로컬 웹 패처입니다. 패치 ZIP과 원본·결과 HDM은 서버로 전송되지 않습니다.
+사용자가 가진 원본 PC-98 FAT12 HDM에 파일별 BPS를 적용하고 결과 디스크를 브라우저 안에서 조립하는 로컬 웹 패처입니다. 단일 결과 패키지와 여러 필수 결과를 묶은 패치 세트를 같은 화면에서 처리합니다. 패치 ZIP과 원본·결과 HDM은 서버로 전송되지 않습니다.
 
 작품별 배포물은 누구나 열 수 있는 ZIP 하나입니다.
 
@@ -12,7 +12,8 @@
    └─ DATA-BIN.bps
 
 사용자 원본 HDM
-  → 원본 크기·해시·FAT12 형상 검사
+  → 원본 크기 사전 필터·정확한 SHA-256 대응
+  → 원본 FAT12 형상 검사
   → 선언된 논리 파일 또는 빈 입력 확정
   → 파일별 BPS 적용
   → 결과 HDM 결정론적 조립·해시 검사
@@ -29,7 +30,7 @@ npm ci
 npm run dev
 ```
 
-패치 ZIP을 먼저 끌어 놓거나 선택하면 지원 원본 조건을 읽고 HDM 입력을 활성화합니다. 잘못된 HDM은 ZIP을 유지한 채 다시 고를 수 있고, ZIP을 지우거나 바꾸면 HDM 선택도 초기화됩니다.
+패치 ZIP을 먼저 끌어 놓거나 선택하면 필수 매체 조건을 읽고 HDM 입력을 활성화합니다. 여러 HDM을 한 번에 놓아도 파일명과 선택 순서가 아니라 SHA-256으로 올바른 구성원에 대응합니다. 누락·중복·지원하지 않는 입력은 따로 표시하고, 잘못된 HDM은 ZIP을 유지한 채 다시 고를 수 있습니다. ZIP을 지우거나 바꾸면 HDM 선택도 초기화됩니다.
 
 Rust 코어를 수정했다면 `wasm-pack`을 설치한 뒤 추적되는 WebAssembly 산출물을 갱신합니다.
 
@@ -78,13 +79,38 @@ cargo run --release --manifest-path patch-core/Cargo.toml \
 
 `inspect`는 각 파일 BPS의 크기와 동작별 바이트 수를 보여 줍니다. BPS 구현은 공개 [retro-patch-utility](https://github.com/mcpads/retro-patch-utility)의 고정 Git 커밋을 사용합니다.
 
+여러 결과 HDM이 모두 필요한 작품은 검증한 단일 패키지를 다시 만들지 않고 패치 세트로 묶습니다. `set-plan.json`의 `package_path`는 계획 파일 기준 로컬 경로이며 배포 매니페스트에는 들어가지 않습니다.
+
+```json
+{
+  "id": "example-complete-set",
+  "title": "예제 게임 한글패치",
+  "members": [
+    {
+      "key": "disk-a",
+      "label": "디스크 A",
+      "package_path": "packages/disk-a.zip"
+    }
+  ]
+}
+```
+
+```sh
+cargo run --release --manifest-path patch-core/Cargo.toml \
+  --bin pc98_patch_author -- create-set \
+  set-plan.json game-complete-kr-patch.zip
+```
+
+작성 도구는 각 내부 ZIP의 정확한 크기·SHA-256, 지원 형식과 필수 매체 사이 원본·결과 해시의 비모호성을 검사합니다. 외부 파일명, 구성원 라벨과 입력 순서는 매체 판정에 쓰지 않습니다.
+
 ## 문서
 
 - [패치 패키지 프로토콜](docs/protocol.md)
 - [공개 적합성 벡터](conformance/manifest.json)
 - [원시 SFN 공개 적합성 벡터](conformance/raw-sfn/manifest.json)
+- [다중 패치 세트 공개 적합성 벡터](conformance/package-set/manifest.json)
 - [구조와 모듈 경계](docs/architecture.md)
 - [현재 검증 상태](docs/status.md)
 - [S3와 CloudFront 정적 배포](docs/s3-cloudfront.md)
 
-원본·content·결과 HDM, 게임 파일, 저장 데이터와 내부 검수 자료는 저장소에 포함하지 않습니다. 현재 범위는 같은 크기의 raw FAT12 이미지, ASCII 또는 원시 11바이트 SFN을 가진 루트 파일 재배치, 빈 입력에서 신규 파일 생성, MZ 실행 파일 뒤 ASCII 또는 원시 이름 LHA 멤버 추출과 파일별 BPS1 적용입니다.
+원본·content·결과 HDM, 게임 파일, 저장 데이터와 내부 검수 자료는 저장소에 포함하지 않습니다. 현재 범위는 같은 크기의 raw FAT12 이미지, ASCII 또는 원시 11바이트 SFN을 가진 루트 파일 재배치, 빈 입력에서 신규 파일 생성, MZ 실행 파일 뒤 ASCII 또는 원시 이름 LHA 멤버 추출, 파일별 BPS1 적용과 독립 단일 패키지의 다중 결과 세트입니다.

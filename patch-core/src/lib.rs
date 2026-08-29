@@ -4,7 +4,9 @@ mod file_patch;
 mod hash;
 mod lha_sfx;
 mod limits;
+mod patch_artifact;
 mod patch_package;
+mod patch_set;
 mod pipeline;
 mod recipe;
 mod source_files;
@@ -15,9 +17,19 @@ mod web_error;
 mod test_support;
 
 pub use fat_name::{FatShortName, LhaMemberName};
+pub use patch_artifact::{
+    PatchArtifact, PatchArtifactDefinition, PatchArtifactInputMatch, PatchArtifactKind,
+    PatchArtifactMemberDefinition, SINGLE_ARTIFACT_MEMBER_KEY, classify_patch_artifact_input,
+    inspect_patch_artifact, materialize_patch_artifact_member, patch_artifact_definition,
+};
 pub use patch_package::{
     PATCH_DIRECTORY, PatchPackage, RECIPE_ENTRY_NAME, apply_patch_package, create_patch_package,
     inspect_patch_package, patch_entry_name,
+};
+pub use patch_set::{
+    PACKAGE_SET_DIRECTORY, PATCH_SET_ENTRY_NAME, PATCH_SET_FORMAT, PatchSet, PatchSetManifest,
+    PatchSetMember, PatchSetPackageInput, create_patch_set, inspect_patch_set, package_entry_name,
+    parse_patch_set_manifest,
 };
 pub use recipe::{
     LEGACY_PACKAGE_FORMAT, PACKAGE_FORMAT, PatchPlan, PatchRecipe, parse_plan, parse_recipe,
@@ -36,6 +48,37 @@ pub fn read_patch_package_recipe_for_web(package: &[u8]) -> Result<String, Strin
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = maximumPatchPackageBytes))]
 pub fn maximum_patch_package_bytes_for_web() -> usize {
     limits::MAX_PATCH_PACKAGE_BYTES
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = readPatchArtifactDefinition))]
+pub fn read_patch_artifact_definition_for_web(artifact: &[u8]) -> Result<String, String> {
+    patch_artifact_definition(artifact)
+        .and_then(|definition| serde_json::to_string(&definition).map_err(Into::into))
+        .map_err(web_error::describe_artifact_selection_failure)
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = maximumPatchArtifactBytes))]
+pub fn maximum_patch_artifact_bytes_for_web() -> usize {
+    limits::MAX_PATCH_SET_BYTES
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = classifyPatchArtifactInput))]
+pub fn classify_patch_artifact_input_for_web(
+    input: &[u8],
+    artifact: &[u8],
+) -> Result<String, String> {
+    classify_patch_artifact_input(input, artifact)
+        .and_then(|matched| serde_json::to_string(&matched).map_err(Into::into))
+        .map_err(display_error)
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = materializePatchArtifactMember))]
+pub fn materialize_patch_artifact_member_for_web(
+    input: &[u8],
+    artifact: &[u8],
+    member_key: &str,
+) -> Result<Vec<u8>, String> {
+    materialize_patch_artifact_member(input, artifact, member_key).map_err(display_error)
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = applyPatchPackage))]

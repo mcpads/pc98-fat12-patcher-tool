@@ -12,20 +12,26 @@ async function loadCore() {
   return initializedCore;
 }
 
-export async function makePatchedImage(
-  source: Uint8Array,
-  patchPackage: Uint8Array,
+export async function materializePatchMember(
+  input: Uint8Array,
+  patchArtifact: Uint8Array,
+  memberKey: string,
 ) {
   const core = await loadCore();
-  return core.applyPatchPackage(source, patchPackage);
+  return core.materializePatchArtifactMember(input, patchArtifact, memberKey);
 }
 
-export async function readPatchPackageRecipe(patchPackage: Uint8Array) {
+export async function readPatchArtifactDefinition(patchArtifact: Uint8Array) {
   const core = await loadCore();
-  return core.readPatchPackageRecipe(patchPackage);
+  return core.readPatchArtifactDefinition(patchArtifact);
 }
 
-export async function maximumPatchPackageBytes() {
+export async function classifyPatchInput(input: Uint8Array, patchArtifact: Uint8Array) {
   const core = await loadCore();
-  return core.maximumPatchPackageBytes();
+  return core.classifyPatchArtifactInput(input, patchArtifact);
+}
+
+export async function maximumPatchArtifactBytes() {
+  const core = await loadCore();
+  return core.maximumPatchArtifactBytes();
 }

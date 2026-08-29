@@ -125,3 +125,31 @@ pub(crate) fn content_image(source: &[u8], plan: &PatchPlan, files: &[(&str, &[u
     )
     .unwrap()
 }
+
+pub(crate) fn patch_fixture(marker: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let retained = vec![b's', b'y', b's', marker];
+    let payload = vec![b'o', b'l', b'd', marker];
+    let localized = vec![b'n', b'e', b'w', marker];
+    let source = fixture_image(
+        &[
+            ("SYSTEM.SYS", retained.as_slice()),
+            ("INSTALL.BIN", payload.as_slice()),
+        ],
+        false,
+    );
+    let mut plan = direct_root_plan(
+        &source,
+        "SYSTEM.SYS",
+        &retained,
+        "INSTALL.BIN",
+        "GAME.COM",
+        &payload,
+    );
+    plan.id = format!("fixture-{marker}");
+    plan.title = format!("Fixture {marker}");
+    plan.output_filename = format!("fixture-{marker}-patched.hdm");
+    let target = content_image(&source, &plan, &[("GAME.COM", &localized)]);
+    let plan_json = serde_json::to_string_pretty(&plan).unwrap();
+    let package = crate::create_patch_package(&plan_json, &source, &target).unwrap();
+    (source, package, target)
+}

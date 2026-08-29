@@ -1,0 +1,21 @@
+{
+  "format": "retrogame-patcher-pc98-fat12-package-set",
+  "package_bytes": 3677,
+  "package_sha256": "6a7cc18abebe04ec4435f32d19356e82736fdb24b564f9c39d62da2e00576c4d",
+  "members": [
+    {
+      "key": "ascii-disk",
+      "package_bytes": 1662,
+      "package_sha256": "b47152522756cf3ce59cf6fec308c02abe2770d7723a6d78111a2758573ed221",
+      "source_sha256": "a6815c75ed1415893aa4dcba86e6c65688f009606fd48ea3a04f29e2f6b42048",
+      "target_sha256": "20b1ea38ef250f6719bad83fdef48a96793a5ac46fca4a4a17c734efceeb9d97"
+    },
+    {
+      "key": "raw-sfn-disk",
+      "package_bytes": 1303,
+      "package_sha256": "8976aa80d93d70d54e2af348a77a080ffdc1c04a090cae889c7ae5d7eea2637e",
+      "source_sha256": "4fba7c5fcdfb0083df6c19f804a5078c299d4839bc529f26fa8b0aee1063f15c",
+      "target_sha256": "2c2d250695e6be0586b48b3efb8e1d8ba73585b6c3c00695cb80538b0811ead5"
+    }
+  ]
+}

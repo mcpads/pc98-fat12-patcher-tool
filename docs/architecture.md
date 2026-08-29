@@ -5,7 +5,10 @@
 ```text
 app/page.tsx
 ├─ app/components/file-picker.tsx       로컬 드롭·선택 UI
-├─ app/lib/patch-definition.ts          표시용 레시피 요약
+├─ app/components/multi-file-picker.tsx 다중 로컬 HDM 입력
+├─ app/components/source-member-list.tsx 필수·누락·여분 매체 상태
+├─ app/hooks/use-patch-application.ts   해시 대응·완료 조건·전체 적용 세션
+├─ app/lib/patch-definition.ts          코어 정의·판정 결과의 표시용 검증
 └─ app/lib/patch-core.ts                 WebAssembly 경계
    └─ wasm/                              추적되는 생성 패키지
 
@@ -18,6 +21,8 @@ patch-core/src/lib.rs
 ├─ fat12.rs                              루트 삭제·순서 배치·구조 재검증
 ├─ file_patch.rs                         파일 BPS 메타데이터 결합
 ├─ patch_package.rs                      ZIP 작성·항목 집합 검사
+├─ patch_set.rs                          기존 패키지의 결정론적 상위 세트
+├─ patch_artifact.rs                     단일·세트 통합 정의·해시 대응·적용
 └─ pipeline.rs                           제작·적용 단계 조정
 
 retro-patch-utility
@@ -53,8 +58,12 @@ plan.json + 정확한 source.hdm + 제작자 로컬 content.hdm
 
 ZIP의 무관한 항목은 압축 해제하지 않습니다. 어느 검사든 실패하면 결과 Blob이나 다운로드 링크를 만들지 않습니다.
 
+다중 입력에서도 React 화면이 파일명을 이용해 구성원을 고르지 않습니다. Rust 코어가 각 입력 전체의 SHA-256을 계산해 단일 패키지 또는 패치 세트의 원본·결과 해시와 대응시킨 뒤 구성원 키만 반환합니다. TypeScript는 그 판정을 표시하고 필수 구성원 충족 여부를 관리합니다. 크기는 불가능한 파일의 해시 계산을 생략하는 사전 필터일 뿐 성공 근거가 아닙니다.
+
+패치 세트의 각 내포 ZIP은 기존 `inspect_patch_package`를 그대로 통과해야 하고, 적용도 같은 `apply_patch_package`를 호출합니다. 상위 계층은 내부 형식을 복제하지 않으며 패키지 바이트 해시, 필수 구성원 집합과 원본·결과 정체의 비모호성만 소유합니다.
+
 서버에서 받는 것은 정적 HTML·JavaScript·WebAssembly뿐입니다. 사용자가 고른 패치 ZIP과 원본 HDM, 조립 결과는 브라우저의 `File`, `Uint8Array`, `Blob`에만 존재하며 서버 API나 업로드 경로가 없습니다.
 
 구체적인 입력 계약과 책임 분리는 [패치 패키지 프로토콜](protocol.md)이 맡습니다.
 
-플랫폼과 빌드 시점에 따른 바이트 차이는 합성 입력·패치 ZIP·기대 HDM을 함께 고정한 [ASCII 호환 벡터](../conformance/manifest.json)와 [원시 SFN 벡터](../conformance/raw-sfn/manifest.json)로 검사합니다. 네이티브와 WebAssembly는 같은 두 벡터를 소비하며 구현 내부 구조가 아니라 패키지와 결과 바이트의 일치를 판정합니다.
+플랫폼과 빌드 시점에 따른 바이트 차이는 합성 입력·패치 ZIP·기대 HDM을 함께 고정한 [ASCII 호환 벡터](../conformance/manifest.json), [원시 SFN 벡터](../conformance/raw-sfn/manifest.json), 두 기존 ZIP을 그대로 결합한 [패치 세트 벡터](../conformance/package-set/manifest.json)로 검사합니다. 네이티브와 WebAssembly는 같은 세 벡터를 소비하며 구현 내부 구조가 아니라 패키지와 결과 바이트의 일치를 판정합니다.
