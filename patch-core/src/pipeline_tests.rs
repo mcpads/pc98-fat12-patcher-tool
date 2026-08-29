@@ -119,3 +119,39 @@ fn content_image_with_divergent_fat_mirrors_is_rejected() {
         .to_string();
     assert!(error.contains("FAT mirror 1 differs"));
 }
+
+#[test]
+fn legacy_ascii_package_reproduces_deleted_directory_metadata() {
+    let retained = b"system";
+    let payload = b"original game payload";
+    let localized = b"localized game payload";
+    let mut source = fixture_image(&[("SYSTEM.SYS", retained), ("INSTALL.BIN", payload)], true);
+    let geometry = crate::test_support::fixture_geometry();
+    let root_start = usize::from(geometry.bytes_per_sector)
+        * (usize::from(geometry.reserved_sectors)
+            + usize::from(geometry.fat_count) * usize::from(geometry.sectors_per_fat));
+    let directory_offset = (0..usize::from(geometry.root_entries))
+        .map(|index| root_start + index * 32)
+        .find(|offset| source[*offset..*offset + 11] == *b"JUNK       ")
+        .expect("fixture directory entry");
+    source[directory_offset + 22..directory_offset + 26].copy_from_slice(&[1, 2, 3, 4]);
+
+    let plan = direct_root_plan(
+        &source,
+        "SYSTEM.SYS",
+        retained,
+        "INSTALL.BIN",
+        "GAME.COM",
+        payload,
+    );
+    let content = content_image(&source, &plan, &[("GAME.COM", localized)]);
+    let created = create_package_contents(plan, &source, &content).unwrap();
+    let applied = apply_package_contents(&created.recipe, &created.patches, &source).unwrap();
+
+    assert_eq!(applied[directory_offset], 0xe5);
+    assert_eq!(
+        &applied[directory_offset + 22..directory_offset + 26],
+        &[0; 4],
+        "existing ASCII packages depend on the original fatfs deletion bytes"
+    );
+}

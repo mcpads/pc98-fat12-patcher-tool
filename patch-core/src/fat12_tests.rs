@@ -25,7 +25,10 @@ fn assembly_preserves_declared_files_and_replaces_the_rest_in_order() {
         payload,
     );
     let placed = BTreeMap::from([("GAME.COM".to_owned(), payload.to_vec())]);
-    let placements = vec![("GAME.COM".to_owned(), FatShortName::ascii("GAME.COM"))];
+    let placements = vec![FilePlacement {
+        patch_key: "GAME.COM".to_owned(),
+        name: FatShortName::ascii("GAME.COM"),
+    }];
     let assembled = assemble_image(
         &source,
         &plan.source,
@@ -79,8 +82,14 @@ fn canonical_assembly_follows_placed_order_and_preserves_cluster_tail_bytes() {
     let first = vec![0x31; 600];
     let second = vec![0x42; 16];
     let placements = vec![
-        ("ZNEW.BIN".to_owned(), FatShortName::ascii("ZNEW.BIN")),
-        ("ANEW.BIN".to_owned(), FatShortName::ascii("ANEW.BIN")),
+        FilePlacement {
+            patch_key: "ZNEW.BIN".to_owned(),
+            name: FatShortName::ascii("ZNEW.BIN"),
+        },
+        FilePlacement {
+            patch_key: "ANEW.BIN".to_owned(),
+            name: FatShortName::ascii("ANEW.BIN"),
+        },
     ];
     let placed = BTreeMap::from([
         ("ANEW.BIN".to_owned(), second),
@@ -188,7 +197,10 @@ fn assembly_writes_and_reads_a_cp932_raw_sfn_without_a_host_filename() {
         raw_sfn_hex: "93b9919088d995b7444154".to_owned(),
     };
     let raw_bytes = raw_name.raw_bytes("Docho data").unwrap();
-    let placements = vec![("DOCHO-DATA".to_owned(), raw_name)];
+    let placements = vec![FilePlacement {
+        patch_key: "DOCHO-DATA".to_owned(),
+        name: raw_name,
+    }];
     let placed = BTreeMap::from([("DOCHO-DATA".to_owned(), payload.to_vec())]);
 
     let assembled = assemble_image(

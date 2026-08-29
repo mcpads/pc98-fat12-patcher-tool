@@ -140,7 +140,7 @@ cargo run --release --manifest-path patch-core/Cargo.toml \
 
 배포판 번호는 별도 프로토콜 필드가 아닙니다. 필요하면 ZIP 이름, `title`, `output_filename`에 표시하되 적용 판정은 내용 정체에만 의존합니다.
 
-새 패키지는 `retrogame-patcher-pc98-fat12-raw-sfn-file-bps`를 사용합니다. 이 형식은 FAT 이름의 원시 11바이트와 ZIP 내부의 안전한 `patch_key`를 분리합니다. 기존 `retrogame-patcher-pc98-fat12-file-bps`는 ASCII DOS 이름을 패치 키로도 쓰던 공개 패키지를 재현하고 적용하기 위한 호환 형식입니다. 기존 형식의 의미와 공개 벡터는 바꾸지 않습니다.
+새 패키지는 `retrogame-patcher-pc98-fat12-raw-sfn-file-bps`를 사용합니다. 이 형식은 FAT 이름의 원시 11바이트와 ZIP 내부의 안전한 `patch_key`를 분리합니다. 기존 `retrogame-patcher-pc98-fat12-file-bps`는 ASCII DOS 이름을 패치 키로도 쓰던 공개 패키지를 재현하고 적용하기 위한 호환 형식입니다. 기존 형식의 의미와 공개 벡터는 바꾸지 않습니다. `format`만이 조립 의미를 선택하며, 파일명·디스크 내용·실행 환경으로 형식을 추론하거나 다른 조립기로 fallback하지 않습니다. 조립 의미를 바꿔야 한다면 새 형식 식별자가 필요합니다.
 
 ### 원본과 FAT12 형상
 
@@ -274,6 +274,12 @@ LHA 헤더의 이름 바이트도 호스트 문자열 변환 없이 직접 선�
 참조 구현은 BPS1 처리를 공개 [retro-patch-utility](https://github.com/mcpads/retro-patch-utility)에 위임하고 Cargo Git 의존성을 정확한 커밋 SHA로 고정합니다.
 
 ## 결과 HDM 조립
+
+### 기존 ASCII 호환 형식
+
+`retrogame-patcher-pc98-fat12-file-bps`는 최초 공개 당시의 조립 의미를 그대로 유지합니다. 참조 구현은 원본의 메모리 복사본을 `fatfs` 0.3.6으로 열고, 보존하지 않는 항목을 라이브러리의 삭제 동작으로 제거한 뒤 `placed_files` 순서대로 ASCII 파일을 생성합니다. `pc98_dos3` 보정은 마운트 복사본에만 적용하며 언마운트 뒤 예약 영역을 원본 바이트로 되돌립니다. 공개 ASCII 적합성 벡터와 각 레시피의 `target.sha256`이 최종 판정 기준입니다. 새 원시 조립 규칙이나 파일별 FAT 설정을 이 형식에 소급 적용하지 않습니다.
+
+### 원시 SFN 형식
 
 결과 바이트는 다음 규칙으로 조립합니다. 별도로 “알아서 정하는” FAT 배치나 시각 값은 없습니다.
 

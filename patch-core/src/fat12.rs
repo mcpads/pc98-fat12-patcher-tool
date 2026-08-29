@@ -7,6 +7,11 @@ use crate::hash::require_sha256;
 use crate::limits::MAX_FAT_DIRECTORY_DEPTH;
 use crate::recipe::{ExactFile, Fat12Geometry, MountPolicy, SourceImage};
 
+#[path = "fat12_legacy.rs"]
+mod legacy;
+
+pub(crate) use legacy::assemble_legacy_ascii_image;
+
 const DIRECTORY_ENTRY_BYTES: usize = 32;
 const ATTRIBUTE_OFFSET: usize = 11;
 const FIRST_CLUSTER_OFFSET: usize = 26;
@@ -36,6 +41,12 @@ struct DirectoryRecord {
     attributes: u8,
     first_cluster: u16,
     file_size: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FilePlacement {
+    pub patch_key: String,
+    pub name: FatShortName,
 }
 
 impl DirectoryRecord {
@@ -78,7 +89,7 @@ pub(crate) fn assemble_image(
     source: &[u8],
     source_profile: &SourceImage,
     retained_files: &[ExactFile],
-    placed_files: &[(String, FatShortName)],
+    placed_files: &[FilePlacement],
     placed_file_bytes: &BTreeMap<String, Vec<u8>>,
 ) -> Result<Vec<u8>> {
     require_geometry(source, &source_profile.geometry)?;
@@ -97,18 +108,18 @@ pub(crate) fn assemble_image(
     }
 
     let mut allocation_hint = 2_u16;
-    for (patch_key, name) in placed_files {
+    for placement in placed_files {
         let bytes = placed_file_bytes
-            .get(patch_key)
-            .with_context(|| format!("resolved file set is missing {patch_key}"))?;
+            .get(&placement.patch_key)
+            .with_context(|| format!("resolved file set is missing {}", placement.patch_key))?;
         write_root_file(
             &mut image,
             &layout,
-            name.raw_bytes("placed file name")?,
+            placement.name.raw_bytes("placed file name")?,
             bytes,
             &mut allocation_hint,
         )
-        .with_context(|| format!("write FAT12 file {patch_key}"))?;
+        .with_context(|| format!("write FAT12 file {}", placement.patch_key))?;
     }
 
     verify_image(
@@ -703,7 +714,7 @@ fn verify_image(
     image: &[u8],
     source_profile: &SourceImage,
     retained_files: &[ExactFile],
-    placed_files: &[(String, FatShortName)],
+    placed_files: &[FilePlacement],
     placed_file_bytes: &BTreeMap<String, Vec<u8>>,
 ) -> Result<()> {
     ensure!(
@@ -737,7 +748,7 @@ fn verify_image(
         .chain(
             placed_files
                 .iter()
-                .map(|(_, name)| name.raw_bytes("placed file name")),
+                .map(|placement| placement.name.raw_bytes("placed file name")),
         )
         .collect::<Result<BTreeSet<_>>>()?;
     ensure!(
@@ -749,14 +760,18 @@ fn verify_image(
     for file in retained_files {
         verify_exact_file(image, &layout, file)?;
     }
-    for (patch_key, name) in placed_files {
+    for placement in placed_files {
         let expected = placed_file_bytes
-            .get(patch_key)
-            .with_context(|| format!("resolved file set is missing {patch_key}"))?;
-        let raw_name = name.raw_bytes("placed file name")?;
+            .get(&placement.patch_key)
+            .with_context(|| format!("resolved file set is missing {}", placement.patch_key))?;
+        let raw_name = placement.name.raw_bytes("placed file name")?;
         let entry = require_unique_file(&records, &raw_name)?;
         let actual = read_file(image, &layout, entry, expected.len())?;
-        ensure!(actual == *expected, "assembled file differs: {patch_key}");
+        ensure!(
+            actual == *expected,
+            "assembled file differs: {}",
+            placement.patch_key
+        );
     }
     Ok(())
 }

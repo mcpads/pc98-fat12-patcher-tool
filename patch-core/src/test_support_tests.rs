@@ -4,7 +4,7 @@ use std::io::{Cursor, Write};
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions, format_volume};
 
 use crate::fat_name::FatShortName;
-use crate::fat12::assemble_image;
+use crate::fat12::{FilePlacement, assemble_image};
 use crate::hash::sha256_hex;
 use crate::recipe::{
     ExactFile, Fat12Geometry, FileSource, MountPolicy, PatchPlan, PlannedAssemblyRecipe,
@@ -109,11 +109,9 @@ pub(crate) fn content_image(source: &[u8], plan: &PatchPlan, files: &[(&str, &[u
         .assembly
         .placed_files
         .iter()
-        .map(|file| {
-            (
-                file.effective_patch_key(format).unwrap().to_owned(),
-                file.name.clone(),
-            )
+        .map(|file| FilePlacement {
+            patch_key: file.effective_patch_key(format).unwrap().to_owned(),
+            name: file.name.clone(),
         })
         .collect::<Vec<_>>();
     assemble_image(

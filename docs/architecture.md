@@ -18,7 +18,8 @@ patch-core/src/lib.rs
 ├─ limits.rs                             파서와 브라우저 자원 한계
 ├─ source_files.rs                       원본 논리 파일 선택
 ├─ lha_sfx.rs                            MZ 길이와 LHA 멤버 추출
-├─ fat12.rs                              루트 삭제·순서 배치·구조 재검증
+├─ fat12.rs                              원시 루트 삭제·순서 배치·구조 재검증
+├─ fat12_legacy.rs                       기존 ASCII 패키지 목표 바이트 재현
 ├─ file_patch.rs                         파일 BPS 메타데이터 결합
 ├─ patch_package.rs                      ZIP 작성·항목 집합 검사
 ├─ patch_set.rs                          기존 패키지의 결정론적 상위 세트
@@ -29,7 +30,7 @@ retro-patch-utility
 └─ bps/                                  BPS1 생성·검사·적용
 ```
 
-`pipeline.rs`는 파일 수집, 변환과 HDM 조립 순서만 조정합니다. ZIP 파싱은 `patch_package.rs`, BPS 자체는 공개 유틸리티, 작품별 BPS 결합은 `file_patch.rs`, FAT12 소비는 `fat12.rs`가 맡습니다. 테스트는 구현 파일 안에 넣지 않고 모두 `_tests.rs`에 둡니다.
+`pipeline.rs`는 파일 수집, 변환과 HDM 조립 순서만 조정합니다. ZIP 파싱은 `patch_package.rs`, BPS 자체는 공개 유틸리티, 작품별 BPS 결합은 `file_patch.rs`, 현재 FAT12 소비는 `fat12.rs`가 맡습니다. `fat12_legacy.rs`는 최초 공개된 ASCII 패키지의 목표 바이트를 재현할 때만 호출됩니다. 테스트는 구현 파일 안에 넣지 않고 모두 `_tests.rs`에 둡니다.
 
 외부 BPS 라이브러리는 브랜치 최신값이 아니라 `patch-core/Cargo.toml`의 정확한 Git 커밋 SHA로 고정합니다. 따라서 패처 빌드는 감사한 BPS 구현을 재사용하면서 저장소 경계도 유지합니다.
 

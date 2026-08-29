@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, ensure};
 
-use crate::fat12::{assemble_image, read_root_files, require_fat12_structure, require_geometry};
+use crate::fat12::{
+    FilePlacement, assemble_image, assemble_legacy_ascii_image, read_root_files,
+    require_fat12_structure, require_geometry,
+};
 use crate::file_patch::{apply_file_patch, create_file_patch};
 use crate::hash::{require_sha256, sha256_hex};
 use crate::recipe::{
@@ -76,13 +79,14 @@ pub(crate) fn create_package_contents(
     let placements = placed_files
         .iter()
         .map(|file| {
-            Ok((
-                file.effective_patch_key(format)?.to_owned(),
-                file.name.clone(),
-            ))
+            Ok(FilePlacement {
+                patch_key: file.effective_patch_key(format)?.to_owned(),
+                name: file.name.clone(),
+            })
         })
         .collect::<Result<Vec<_>>>()?;
-    let target = assemble_image(
+    let target = assemble_package_target(
+        format,
         source,
         &plan.source,
         &plan.assembly.retained_files,
@@ -168,13 +172,14 @@ pub(crate) fn apply_package_contents(
         .placed_files
         .iter()
         .map(|file| {
-            Ok((
-                file.effective_patch_key(format)?.to_owned(),
-                file.name.clone(),
-            ))
+            Ok(FilePlacement {
+                patch_key: file.effective_patch_key(format)?.to_owned(),
+                name: file.name.clone(),
+            })
         })
         .collect::<Result<Vec<_>>>()?;
-    let target = assemble_image(
+    let target = assemble_package_target(
+        format,
         source,
         &recipe.source,
         &recipe.assembly.retained_files,
@@ -191,6 +196,32 @@ pub(crate) fn apply_package_contents(
     require_sha256(&target, &recipe.target.sha256, "target image")?;
     require_fat12_structure(&target, &recipe.source.geometry, recipe.source.mount_policy)?;
     Ok(target)
+}
+
+fn assemble_package_target(
+    format: crate::recipe::PackageFormat,
+    source: &[u8],
+    source_profile: &crate::recipe::SourceImage,
+    retained_files: &[crate::recipe::ExactFile],
+    placements: &[FilePlacement],
+    placed_file_bytes: &BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<u8>> {
+    match format {
+        crate::recipe::PackageFormat::LegacyAscii => assemble_legacy_ascii_image(
+            source,
+            source_profile,
+            retained_files,
+            placements,
+            placed_file_bytes,
+        ),
+        crate::recipe::PackageFormat::RawShortName => assemble_image(
+            source,
+            source_profile,
+            retained_files,
+            placements,
+            placed_file_bytes,
+        ),
+    }
 }
 
 fn require_source_image(source_profile: &crate::recipe::SourceImage, source: &[u8]) -> Result<()> {
