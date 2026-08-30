@@ -2,6 +2,8 @@ mod fat12;
 mod fat_name;
 mod file_patch;
 mod hash;
+mod iso9660;
+mod iso_directory_package;
 mod lha_sfx;
 mod limits;
 mod patch_artifact;
@@ -17,6 +19,13 @@ mod web_error;
 mod test_support;
 
 pub use fat_name::{FatShortName, LhaMemberName};
+pub use iso_directory_package::{
+    ISO_DIRECTORY_PACKAGE_FORMAT, IsoDirectoryFile, IsoDirectoryFileTransform,
+    IsoDirectoryPatchPackage, IsoDirectoryPatchPlan, IsoDirectoryPatchRecipe, IsoDirectorySource,
+    IsoDirectoryTarget, PlannedIsoDirectoryTarget, apply_iso_directory_patch_package,
+    create_iso_directory_patch_package, inspect_iso_directory_patch_package,
+    parse_iso_directory_plan, parse_iso_directory_recipe,
+};
 pub use patch_artifact::{
     PatchArtifact, PatchArtifactDefinition, PatchArtifactInputMatch, PatchArtifactKind,
     PatchArtifactMemberDefinition, SINGLE_ARTIFACT_MEMBER_KEY, classify_patch_artifact_input,
@@ -40,8 +49,12 @@ use wasm_bindgen::prelude::*;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = readPatchPackageRecipe))]
 pub fn read_patch_package_recipe_for_web(package: &[u8]) -> Result<String, String> {
-    inspect_patch_package(package)
-        .map(|contents| contents.recipe_json)
+    inspect_patch_artifact(package)
+        .and_then(|artifact| match artifact {
+            PatchArtifact::Single(contents) => Ok(contents.recipe_json),
+            PatchArtifact::IsoDirectory(contents) => Ok(contents.recipe_json),
+            PatchArtifact::Set(_) => anyhow::bail!("expected a single patch package, got a set"),
+        })
         .map_err(web_error::describe_package_selection_failure)
 }
 
@@ -83,7 +96,13 @@ pub fn materialize_patch_artifact_member_for_web(
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = applyPatchPackage))]
 pub fn apply_patch_package_for_web(source: &[u8], package: &[u8]) -> Result<Vec<u8>, String> {
-    apply_patch_package(source, package).map_err(display_error)
+    inspect_patch_artifact(package)
+        .and_then(|artifact| match artifact {
+            PatchArtifact::Single(_) => apply_patch_package(source, package),
+            PatchArtifact::IsoDirectory(_) => apply_iso_directory_patch_package(source, package),
+            PatchArtifact::Set(_) => anyhow::bail!("expected a single patch package, got a set"),
+        })
+        .map_err(display_error)
 }
 
 fn display_error(error: anyhow::Error) -> String {

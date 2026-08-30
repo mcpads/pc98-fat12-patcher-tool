@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'PC-98 FAT12 한글 패처 | RetroGame Patcher',
-  description: '원본 PC-98 FAT12 HDM을 브라우저 안에서 검사하고 패치 ZIP을 적용하는 로컬 웹 패처',
+  title: '레트로 게임 한글 패처 | Retro Patcher',
+  description: '원본 디스크와 CD 이미지를 브라우저 안에서 검사하고 패치 ZIP을 적용하는 로컬 웹 패처',
   alternates: {
     canonical: 'https://patcher.retrogame.cloud/',
   },
@@ -11,9 +11,9 @@ export const metadata: Metadata = {
     type: 'website',
     locale: 'ko_KR',
     url: 'https://patcher.retrogame.cloud/',
-    siteName: 'RetroGame Patcher',
-    title: 'PC-98 FAT12 한글 패처 | RetroGame Patcher',
-    description: '원본 PC-98 FAT12 HDM을 브라우저 안에서 검사하고 패치 ZIP을 적용하는 로컬 웹 패처',
+    siteName: 'Retro Patcher',
+    title: '레트로 게임 한글 패처 | Retro Patcher',
+    description: '원본 디스크와 CD 이미지를 브라우저 안에서 검사하고 패치 ZIP을 적용하는 로컬 웹 패처',
   },
 };
 

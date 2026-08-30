@@ -1,11 +1,21 @@
 [package]
-name = "pc98-fat12-patcher-core"
+name = "retro-patcher-core"
 version = "0.0.0"
 edition = "2024"
 publish = false
+autobins = false
 
 [lib]
+name = "pc98_fat12_patcher_core"
 crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "retro-patch-author"
+path = "src/bin/retro_patch_author.rs"
+
+[[bin]]
+name = "pc98_patch_author"
+path = "src/bin/pc98_patch_author.rs"
 
 [dependencies]
 anyhow = "1.0"

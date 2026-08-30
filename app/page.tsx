@@ -18,9 +18,9 @@ export default function Home() {
     <main className="site-shell">
       <header className="app-header">
         <div>
-          <p>RetroGame Patcher / PC-98 FAT12</p>
+          <p>Retro Patcher / Disk &amp; CD</p>
           <h1>한글패치 적용</h1>
-          <span>패치 ZIP을 확인한 다음, 필요한 원본 HDM을 해시로 자동 대응합니다.</span>
+          <span>패치 ZIP을 확인한 다음, 필요한 원본 이미지를 해시로 자동 대응합니다.</span>
         </div>
         <strong className="privacy-note">파일 전송 없음 · 브라우저 내부 처리</strong>
       </header>
@@ -62,7 +62,7 @@ export default function Home() {
         <div className="input-section">
           <div className="section-heading">
             <span>02</span>
-            <div><strong>원본 HDM</strong><small>여러 장을 함께 놓거나 빠진 매체를 나중에 추가하세요.</small></div>
+            <div><strong>원본 이미지</strong><small>여러 장을 함께 놓거나 빠진 매체를 나중에 추가하세요.</small></div>
           </div>
           <MultiFilePicker
             disabled={!patch.hasDefinition || patch.isWorking}
@@ -92,7 +92,7 @@ export default function Home() {
                   download={download.filename}
                   key={download.key}
                 >
-                  <span>{patch.downloads.length === 1 ? 'HDM 내려받기' : download.label}</span>
+                  <span>{patch.downloads.length === 1 ? '결과 내려받기' : download.label}</span>
                   <small>{formatBytes(download.size)}</small>
                 </a>
               ))}
@@ -113,7 +113,7 @@ export default function Home() {
       <footer>
         <p>원본과 결과는 이 탭의 메모리에서만 처리됩니다.</p>
         <a
-          href="https://github.com/mcpads/pc98-fat12-patcher-tool"
+          href="https://github.com/mcpads/retro-patcher"
           target="_blank"
           rel="noopener noreferrer"
         >

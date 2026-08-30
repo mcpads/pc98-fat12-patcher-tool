@@ -182,7 +182,7 @@ fn web_reader_hides_archive_internals_for_a_non_zip_file() {
 
     assert_eq!(
         error,
-        "패치 ZIP을 읽을 수 없습니다. 올바른 PC-98 FAT12 패치 ZIP인지 확인하세요."
+        "패치 ZIP을 읽을 수 없습니다. 올바른 Retro Patcher 패치 ZIP인지 확인하세요."
     );
     assert!(!error.contains("open patch ZIP"));
     assert!(!error.contains("invalid Zip archive"));

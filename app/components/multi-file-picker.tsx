@@ -23,7 +23,7 @@ export function MultiFilePicker({ disabled = false, onFiles }: MultiFilePickerPr
   function chooseFiles(list: FileList | null) {
     const files = list ? Array.from(list) : [];
     if (files.length === 0) {
-      setDropError('HDM 파일을 하나 이상 선택하세요.');
+      setDropError('원본 이미지 파일을 하나 이상 선택하세요.');
       return;
     }
     setDropError(null);
@@ -66,7 +66,7 @@ export function MultiFilePicker({ disabled = false, onFiles }: MultiFilePickerPr
         if (!disabled) chooseFiles(event.dataTransfer.files);
       }}
     >
-      <label className="visually-hidden" htmlFor={inputId}>원본 HDM 선택</label>
+      <label className="visually-hidden" htmlFor={inputId}>원본 이미지 선택</label>
       <button
         className="file-drop"
         type="button"
@@ -74,9 +74,9 @@ export function MultiFilePicker({ disabled = false, onFiles }: MultiFilePickerPr
         aria-describedby={hintId}
         onClick={openPicker}
       >
-        <span className="file-badge" aria-hidden="true">HDM</span>
+        <span className="file-badge" aria-hidden="true">IMG</span>
         <span className="file-copy">
-          <strong>{isDragging ? '여기에 놓으세요' : '원본 HDM 선택'}</strong>
+          <strong>{isDragging ? '여기에 놓으세요' : '원본 이미지 선택'}</strong>
           <small id={hintId}>
             여러 장을 한 번에 놓아도 됩니다. 이름과 순서가 아니라 SHA-256으로 대응합니다.
           </small>
@@ -87,7 +87,7 @@ export function MultiFilePicker({ disabled = false, onFiles }: MultiFilePickerPr
         id={inputId}
         className="visually-hidden"
         type="file"
-        accept=".hdm,application/octet-stream"
+        accept=".hdm,.img,.iso,.bin,application/octet-stream"
         disabled={disabled}
         multiple
         onChange={(event) => chooseFiles(event.target.files)}

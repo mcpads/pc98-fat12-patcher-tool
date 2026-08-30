@@ -122,7 +122,10 @@ pub fn patch_entry_name(patch_key: &str) -> String {
     format!("{PATCH_DIRECTORY}{patch_key}.bps")
 }
 
-fn write_patch_package(recipe_json: &[u8], patches: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
+pub(crate) fn write_patch_package(
+    recipe_json: &[u8],
+    patches: &BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<u8>> {
     let output = Cursor::new(Vec::new());
     let mut archive = ZipWriter::new(output);
     let options = SimpleFileOptions::default()
@@ -174,7 +177,7 @@ pub(crate) fn require_single_entry(names: &BTreeMap<String, usize>, name: &str) 
     }
 }
 
-fn require_patch_entries(
+pub(crate) fn require_patch_entries(
     names: &BTreeMap<String, usize>,
     expected_entries: &BTreeMap<String, String>,
 ) -> Result<()> {

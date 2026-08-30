@@ -70,7 +70,7 @@ export function usePatchApplication() {
     if (artifactError) return { kind: 'error' as const, message: artifactError };
     if (!hasDefinition) return { kind: 'idle' as const, message: '패치 ZIP을 선택하세요.' };
     if (assignedCount === 0) {
-      return { kind: 'idle' as const, message: '지원 원본 HDM을 한 장 이상 선택하세요.' };
+      return { kind: 'idle' as const, message: '지원 원본 이미지를 한 장 이상 선택하세요.' };
     }
     if (!isReady) {
       const missingLabels = definition!.members

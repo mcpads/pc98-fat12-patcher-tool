@@ -371,22 +371,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "pc98-fat12-patcher-core"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "delharc",
- "fatfs",
- "retro-patch-utility",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "wasm-bindgen",
- "zip",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -423,6 +407,22 @@ source = "git+https://github.com/mcpads/retro-patch-utility?rev=1733ff660268da27
 dependencies = [
  "anyhow",
  "crc32fast",
+]
+
+[[package]]
+name = "retro-patcher-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "delharc",
+ "fatfs",
+ "retro-patch-utility",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "wasm-bindgen",
+ "zip",
 ]
 
 [[package]]

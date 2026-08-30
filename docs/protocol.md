@@ -2,6 +2,8 @@
 
 이 문서는 패치 ZIP 제작자와 호환 적용기 구현자가 따라야 할 계약을 정의합니다. 배포 단위는 전체 HDM 패치가 아니라 FAT12 논리 파일마다 만든 BPS입니다. 결과 HDM은 적용 시 사용자가 가진 원본에서 결정론적으로 다시 조립합니다.
 
+이 계약은 Retro Patcher가 지원하는 형식 중 FAT12 패키지만 정의합니다. format 식별자와 기존 적용 동작은 저장소 이름 변경과 무관하게 유지됩니다.
+
 ## 목차
 
 - [역할과 책임](#역할과-책임)
@@ -120,7 +122,7 @@
 
 ```sh
 cargo run --release --manifest-path patch-core/Cargo.toml \
-  --bin pc98_patch_author -- create-set \
+  --bin retro-patch-author -- create-set \
   set-plan.json game-complete-kr-patch.zip
 ```
 

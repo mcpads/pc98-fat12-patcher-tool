@@ -51,7 +51,7 @@ export function SourceMemberList({
           const assigned = assignments[member.key];
           return (
             <li className={assigned ? 'is-matched' : 'is-missing'} key={member.key}>
-              <div>
+              <div className="member-copy">
                 <strong>{member.label}</strong>
                 {assigned ? (
                   <small>
@@ -60,6 +60,16 @@ export function SourceMemberList({
                 ) : (
                   <small>필요한 원본 또는 정확한 적용 결과가 없습니다.</small>
                 )}
+                <dl className="member-identity">
+                  <div>
+                    <dt>지원 원본 · {formatBytes(member.sourceSize)}</dt>
+                    <dd><span>SHA-256</span><code>{member.sourceSha256}</code></dd>
+                  </div>
+                  <div>
+                    <dt>적용 결과 · {formatBytes(member.targetSize)}</dt>
+                    <dd><span>SHA-256</span><code>{member.targetSha256}</code></dd>
+                  </div>
+                </dl>
               </div>
               {assigned && (
                 <button type="button" disabled={disabled} onClick={() => onRemoveMember(member.key)}>지우기</button>

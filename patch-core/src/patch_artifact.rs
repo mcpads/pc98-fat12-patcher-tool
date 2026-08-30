@@ -5,10 +5,14 @@ use serde::Serialize;
 use zip::ZipArchive;
 
 use crate::hash::sha256_hex;
+use crate::iso_directory_package::{
+    ISO_DIRECTORY_PACKAGE_FORMAT, IsoDirectoryPatchPackage, apply_iso_directory_patch_package,
+    inspect_iso_directory_patch_package, recipe_format_from_json,
+};
 use crate::limits::MAX_PATCH_SET_BYTES;
 use crate::patch_package::{
     PatchPackage, RECIPE_ENTRY_NAME, apply_patch_package, collect_entry_names,
-    inspect_patch_package,
+    inspect_patch_package, read_entry,
 };
 use crate::patch_set::{PATCH_SET_ENTRY_NAME, PatchSet, inspect_patch_set};
 use crate::recipe::PatchRecipe;
@@ -18,6 +22,7 @@ pub const SINGLE_ARTIFACT_MEMBER_KEY: &str = "single";
 #[derive(Debug, Clone)]
 pub enum PatchArtifact {
     Single(PatchPackage),
+    IsoDirectory(IsoDirectoryPatchPackage),
     Set(PatchSet),
 }
 
@@ -66,7 +71,22 @@ pub fn inspect_patch_artifact(bytes: &[u8]) -> Result<PatchArtifact> {
     let recipe_count = names.get(RECIPE_ENTRY_NAME).copied().unwrap_or_default();
     let set_count = names.get(PATCH_SET_ENTRY_NAME).copied().unwrap_or_default();
     match (recipe_count, set_count) {
-        (1, 0) => inspect_patch_package(bytes).map(PatchArtifact::Single),
+        (1, 0) => {
+            let recipe_bytes = read_entry(
+                &mut archive,
+                RECIPE_ENTRY_NAME,
+                crate::limits::MAX_RECIPE_BYTES as u64,
+            )?;
+            let recipe_json =
+                String::from_utf8(recipe_bytes).context("recipe.json is not UTF-8")?;
+            if recipe_format_from_json(&recipe_json)?.as_deref()
+                == Some(ISO_DIRECTORY_PACKAGE_FORMAT)
+            {
+                inspect_iso_directory_patch_package(bytes).map(PatchArtifact::IsoDirectory)
+            } else {
+                inspect_patch_package(bytes).map(PatchArtifact::Single)
+            }
+        }
         (0, 1) => inspect_patch_set(bytes).map(PatchArtifact::Set),
         (0, 0) => anyhow::bail!(
             "patch artifact ZIP is missing root entry {RECIPE_ENTRY_NAME} or {PATCH_SET_ENTRY_NAME}"
@@ -103,6 +123,13 @@ pub fn materialize_patch_artifact_member(
             );
             materialize_package_input(input, artifact_bytes, &contents.recipe)
         }
+        PatchArtifact::IsoDirectory(contents) => {
+            ensure!(
+                member_key == SINGLE_ARTIFACT_MEMBER_KEY,
+                "single patch artifact member key must be {SINGLE_ARTIFACT_MEMBER_KEY}"
+            );
+            materialize_iso_directory_input(input, artifact_bytes, contents)
+        }
         PatchArtifact::Set(contents) => {
             let package = contents
                 .packages
@@ -129,6 +156,20 @@ fn definition_from_artifact(artifact: &PatchArtifact) -> Result<PatchArtifactDef
                 &contents.recipe.title,
                 &contents.recipe,
             )],
+        }),
+        PatchArtifact::IsoDirectory(contents) => Ok(PatchArtifactDefinition {
+            kind: PatchArtifactKind::Single,
+            id: contents.recipe.id.clone(),
+            title: contents.recipe.title.clone(),
+            members: vec![PatchArtifactMemberDefinition {
+                key: SINGLE_ARTIFACT_MEMBER_KEY.to_owned(),
+                label: contents.recipe.title.clone(),
+                output_filename: contents.recipe.output_filename.clone(),
+                source_size: contents.recipe.source.size,
+                source_sha256: contents.recipe.source.sha256.clone(),
+                target_size: contents.recipe.target.size,
+                target_sha256: contents.recipe.target.sha256.clone(),
+            }],
         }),
         PatchArtifact::Set(contents) => {
             let members = contents
@@ -172,27 +213,44 @@ fn member_definition(
 
 fn classify_input(artifact: &PatchArtifact, input: &[u8]) -> Result<PatchArtifactInputMatch> {
     let candidates = match artifact {
-        PatchArtifact::Single(contents) => vec![(SINGLE_ARTIFACT_MEMBER_KEY, &contents.recipe)],
+        PatchArtifact::Single(contents) => vec![(
+            SINGLE_ARTIFACT_MEMBER_KEY,
+            contents.recipe.source.size,
+            contents.recipe.source.sha256.as_str(),
+            contents.recipe.target.size,
+            contents.recipe.target.sha256.as_str(),
+        )],
+        PatchArtifact::IsoDirectory(contents) => vec![(
+            SINGLE_ARTIFACT_MEMBER_KEY,
+            contents.recipe.source.size,
+            contents.recipe.source.sha256.as_str(),
+            contents.recipe.target.size,
+            contents.recipe.target.sha256.as_str(),
+        )],
         PatchArtifact::Set(contents) => contents
             .manifest
             .members
             .iter()
             .map(|member| {
+                let recipe = &contents
+                    .inspected_packages
+                    .get(&member.key)
+                    .expect("inspected package keys match manifest keys")
+                    .recipe;
                 (
                     member.key.as_str(),
-                    &contents
-                        .inspected_packages
-                        .get(&member.key)
-                        .expect("inspected package keys match manifest keys")
-                        .recipe,
+                    recipe.source.size,
+                    recipe.source.sha256.as_str(),
+                    recipe.target.size,
+                    recipe.target.sha256.as_str(),
                 )
             })
             .collect(),
     };
     let size_candidates = candidates
         .into_iter()
-        .filter(|(_, recipe)| {
-            input.len() == recipe.source.size || input.len() == recipe.target.size
+        .filter(|(_, source_size, _, target_size, _)| {
+            input.len() == *source_size || input.len() == *target_size
         })
         .collect::<Vec<_>>();
     if size_candidates.is_empty() {
@@ -200,19 +258,40 @@ fn classify_input(artifact: &PatchArtifact, input: &[u8]) -> Result<PatchArtifac
     }
 
     let input_sha256 = sha256_hex(input);
-    for (member_key, recipe) in size_candidates {
-        if input.len() == recipe.source.size && input_sha256 == recipe.source.sha256 {
+    for (member_key, source_size, source_sha256, target_size, target_sha256) in size_candidates {
+        if input.len() == source_size && input_sha256 == source_sha256 {
             return Ok(PatchArtifactInputMatch::Source {
                 member_key: member_key.to_owned(),
             });
         }
-        if input.len() == recipe.target.size && input_sha256 == recipe.target.sha256 {
+        if input.len() == target_size && input_sha256 == target_sha256 {
             return Ok(PatchArtifactInputMatch::Target {
                 member_key: member_key.to_owned(),
             });
         }
     }
     Ok(PatchArtifactInputMatch::Unsupported)
+}
+
+fn materialize_iso_directory_input(
+    input: &[u8],
+    package: &[u8],
+    contents: IsoDirectoryPatchPackage,
+) -> Result<Vec<u8>> {
+    let recipe = contents.recipe;
+    ensure!(
+        input.len() == recipe.source.size || input.len() == recipe.target.size,
+        "input image size does not match the member source or target"
+    );
+    let input_sha256 = sha256_hex(input);
+    if input.len() == recipe.target.size && input_sha256 == recipe.target.sha256 {
+        return Ok(input.to_vec());
+    }
+    ensure!(
+        input.len() == recipe.source.size && input_sha256 == recipe.source.sha256,
+        "input image SHA-256 does not match the member source or target"
+    );
+    apply_iso_directory_patch_package(input, package)
 }
 
 fn materialize_package_input(

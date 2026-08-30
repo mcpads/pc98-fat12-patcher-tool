@@ -1,5 +1,5 @@
 {
-  "name": "pc98-fat12-patcher-tool",
+  "name": "retro-patcher",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

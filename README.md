@@ -1,6 +1,6 @@
-# PC-98 FAT12 Patcher Tool
+# Retro Patcher
 
-사용자가 가진 원본 PC-98 FAT12 HDM에 파일별 BPS를 적용하고 결과 디스크를 브라우저 안에서 조립하는 로컬 웹 패처입니다. 단일 결과 패키지와 여러 필수 결과를 묶은 패치 세트를 같은 화면에서 처리합니다. 패치 ZIP과 원본·결과 HDM은 서버로 전송되지 않습니다.
+사용자가 가진 원본 레트로 게임 매체에 파일별 BPS를 적용하고 결과 이미지를 브라우저 안에서 조립하는 로컬 웹 패처입니다. 현재 PC-98 FAT12 디스크 단일·세트 패키지와 raw Mode1 CD의 단일 ISO9660 디렉터리 패치를 지원합니다. 패치 ZIP과 원본·결과 이미지는 서버로 전송되지 않습니다.
 
 작품별 배포물은 누구나 열 수 있는 ZIP 하나입니다.
 
@@ -11,15 +11,14 @@
    ├─ GAME-COM.bps
    └─ DATA-BIN.bps
 
-사용자 원본 HDM
+사용자 원본 이미지
   → 원본 크기 사전 필터·정확한 SHA-256 대응
-  → 원본 FAT12 형상 검사
-  → 선언된 논리 파일 또는 빈 입력 확정
+  → 매체 형식과 선언된 논리 파일 검사
   → 파일별 BPS 적용
-  → 결과 HDM 결정론적 조립·해시 검사
+  → 결과 이미지 결정론적 조립·해시 검사
 ```
 
-전체 목표 HDM은 패키지 제작 입력이나 배포 payload가 아닙니다. 제작용 content HDM에서는 레시피가 선언한 논리 파일만 읽으므로 클러스터 여유 공간과 미할당 영역은 패치 ZIP에 들어오지 않습니다. 어떤 논리 파일을 배포 가능한 형태로 만들지는 패키지 제작자의 책임이며, 로컬 적용기는 저작권 소유권을 추정하거나 임의의 FAT 영역 정책을 강제하지 않습니다.
+전체 목표 이미지는 패키지 제작 입력이나 배포 payload가 아닙니다. FAT12 패키지는 제작용 content HDM에서 선언된 논리 파일만 읽고, ISO9660 패키지는 제작용 디렉터리에서 원본의 대응 파일만 읽습니다. 어떤 논리 파일을 배포 가능한 형태로 만들지는 패키지 제작자의 책임입니다.
 
 ## 로컬 실행
 
@@ -30,7 +29,7 @@ npm ci
 npm run dev
 ```
 
-패치 ZIP을 먼저 끌어 놓거나 선택하면 필수 매체 조건을 읽고 HDM 입력을 활성화합니다. 여러 HDM을 한 번에 놓아도 파일명과 선택 순서가 아니라 SHA-256으로 올바른 구성원에 대응합니다. 누락·중복·지원하지 않는 입력은 따로 표시하고, 잘못된 HDM은 ZIP을 유지한 채 다시 고를 수 있습니다. ZIP을 지우거나 바꾸면 HDM 선택도 초기화됩니다.
+패치 ZIP을 먼저 끌어 놓거나 선택하면 필수 매체의 크기와 SHA-256을 표시하고 원본 이미지 입력을 활성화합니다. 여러 이미지를 한 번에 놓아도 파일명과 선택 순서가 아니라 SHA-256으로 올바른 구성원에 대응합니다. 누락·중복·지원하지 않는 입력은 따로 표시하고, 잘못된 이미지는 ZIP을 유지한 채 다시 고를 수 있습니다.
 
 Rust 코어를 수정했다면 `wasm-pack`을 설치한 뒤 추적되는 WebAssembly 산출물을 갱신합니다.
 
@@ -46,7 +45,7 @@ npm run build
 
 업로드 범위와 캐시·MIME 타입 설정은 [S3·CloudFront 배포 문서](docs/s3-cloudfront.md)를 따릅니다.
 
-## 패치 작성
+## FAT12 패치 작성
 
 작성 입력인 `plan.json`은 원본 정체, 보존할 파일, 다시 놓을 파일과 각 파일의 `copy` 또는 `bps` 변환 방식을 선언합니다. `content.hdm`은 목표 논리 파일을 읽기 위한 제작자 로컬 입력일 뿐 배포물에 들어가지 않습니다.
 
@@ -54,7 +53,7 @@ npm run build
 
 ```sh
 cargo run --release --manifest-path patch-core/Cargo.toml \
-  --bin pc98_patch_author -- create \
+  --bin retro-patch-author -- create \
   plan.json source.hdm content.hdm game-kr-patch.zip
 ```
 
@@ -70,10 +69,10 @@ cargo run --release --manifest-path patch-core/Cargo.toml \
 
 ```sh
 cargo run --release --manifest-path patch-core/Cargo.toml \
-  --bin pc98_patch_author -- inspect game-kr-patch.zip
+  --bin retro-patch-author -- inspect game-kr-patch.zip
 
 cargo run --release --manifest-path patch-core/Cargo.toml \
-  --bin pc98_patch_author -- apply \
+  --bin retro-patch-author -- apply \
   source.hdm game-kr-patch.zip output.hdm
 ```
 
@@ -97,11 +96,27 @@ cargo run --release --manifest-path patch-core/Cargo.toml \
 
 ```sh
 cargo run --release --manifest-path patch-core/Cargo.toml \
-  --bin pc98_patch_author -- create-set \
+  --bin retro-patch-author -- create-set \
   set-plan.json game-complete-kr-patch.zip
 ```
 
 작성 도구는 각 내부 ZIP의 정확한 크기·SHA-256, 지원 형식과 필수 매체 사이 원본·결과 해시의 비모호성을 검사합니다. 외부 파일명, 구성원 라벨과 입력 순서는 매체 판정에 쓰지 않습니다.
+
+## ISO9660 디렉터리 패치 작성
+
+raw 2352바이트 Mode1 CD 이미지에서 계획에 지정한 ISO9660 디렉터리의 파일만 추출하고, 같은 파일명 집합을 가진 제작용 디렉터리와 비교해 패치 ZIP을 만듭니다. 사용자는 이 패치와 원본 CD 이미지를 넣어 2048바이트 논리 섹터의 단일 디렉터리 ISO를 받습니다. 전체 원본 CD나 완성 ISO는 배포 ZIP에 들어가지 않습니다.
+
+```sh
+cargo run --release --manifest-path patch-core/Cargo.toml \
+  --bin retro-patch-author -- create-iso-directory \
+  plan.json source.img content-directory game-kr-patch.zip
+
+cargo run --release --manifest-path patch-core/Cargo.toml \
+  --bin retro-patch-author -- apply \
+  source.img game-kr-patch.zip output.iso
+```
+
+기존 자동화의 `--bin pc98_patch_author` 진입점과 공개 FAT12 format 식별자는 호환을 위해 그대로 유지합니다. 새 작성 흐름은 매체와 무관한 `retro-patch-author`를 사용합니다.
 
 ## 문서
 
@@ -113,4 +128,4 @@ cargo run --release --manifest-path patch-core/Cargo.toml \
 - [현재 검증 상태](docs/status.md)
 - [S3와 CloudFront 정적 배포](docs/s3-cloudfront.md)
 
-원본·content·결과 HDM, 게임 파일, 저장 데이터와 내부 검수 자료는 저장소에 포함하지 않습니다. 현재 범위는 같은 크기의 raw FAT12 이미지, ASCII 또는 원시 11바이트 SFN을 가진 루트 파일 재배치, 빈 입력에서 신규 파일 생성, MZ 실행 파일 뒤 ASCII 또는 원시 이름 LHA 멤버 추출, 파일별 BPS1 적용과 독립 단일 패키지의 다중 결과 세트입니다.
+원본·content·결과 이미지, 게임 파일, 저장 데이터와 내부 검수 자료는 저장소에 포함하지 않습니다. 지원 형식별 세부 계약과 적용 범위는 코드·프로토콜 문서·공개 적합성 벡터가 맡습니다.
